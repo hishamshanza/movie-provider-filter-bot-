@@ -1,0 +1,2779 @@
+from hydrogram import Client, filters
+from utils import temp
+from hydrogram.types import Message
+from database.users_chats_db import db
+from info import SUPPORT_LINK
+from hydrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+async def banned_users(_, __, message: Message):
+    return (
+        message.from_user is not None or not message.sender_chat
+    ) and message.from_user.id in temp.BANNED_USERS
+
+banned_user = filters.create(banned_users)
+
+async def disabled_chat(_, __, message: Message):
+    return message.chat.id in temp.BANNED_CHATS
+
+disabled_group=filters.create(disabled_chat)
+
+@Client.on_message(filters.private & banned_user & filters.incoming)
+async def is_user_banned(bot, message):
+    buttons = [[
+        InlineKeyboardButton('Support Group', url=SUPPORT_LINK)
+    ]]
+    reply_markup=InlineKeyboardMarkup(buttons)
+    ban = await db.get_ban_status(message.from_user.id)
+    await message.reply(f'Sorry {message.from_user.mention},\nMy owner you are banned to use me! If you want to know more about it contact support group.\nReason - <code>{ban["ban_reason"]}</code>',
+                        reply_markup=reply_markup)
+
+@Client.on_message(filters.group & disabled_group & filters.incoming)
+async def is_group_disabled(bot, message):
+    buttons = [[
+        InlineKeyboardButton('Support Group', url=SUPPORT_LINK)
+    ]]
+    reply_markup=InlineKeyboardMarkup(buttons)
+    vazha = await db.get_chat(message.chat.id)
+    k = await message.reply(
+        text=f"<b><u>Chat Not Allowed</u></b>\n\nMy owner has restricted me from working here! If you want to know more about it contact support group.\nReason - <code>{vazha['reason']}</code>",
+        reply_markup=reply_markup)
+    try:
+        await k.pin()
+    except:
+        pass
+    await bot.leave_chat(message.chat.id)
+from hydrogram import Client, filters
+import time
+from database.users_chats_db import db
+from info import ADMINS
+from utils import broadcast_messages, groups_broadcast_messages, temp, get_readable_time
+import asyncio
+from hydrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+lock = asyncio.Lock()
+
+@Client.on_callback_query(filters.regex(r'^broadcast_cancel'))
+async def broadcast_cancel(bot, query):
+    _, ident = query.data.split("#")
+    if ident == 'users':
+        await query.message.edit("Trying to cancel users broadcasting...")
+        temp.USERS_CANCEL = True
+    elif ident == 'groups':
+        temp.GROUPS_CANCEL = True
+        await query.message.edit("Trying to cancel groups broadcasting...")
+               
+@Client.on_message(filters.command(["broadcast", "pin_broadcast"]) & filters.user(ADMINS) & filters.reply)
+async def users_broadcast(bot, message):
+    if lock.locked():
+        return await message.reply('Currently broadcast processing, Wait for complete.')
+    if message.command[0] == 'pin_broadcast':
+        pin = True
+    else:
+        pin = False
+    users = await db.get_all_users()
+    b_msg = message.reply_to_message
+    b_sts = await message.reply_text(text='Broadcasting your users messages...')
+    start_time = time.time()
+    total_users = await db.total_users_count()
+    done = 0
+    failed = 0
+    success = 0
+
+    async with lock:
+        for user in users:
+            time_taken = get_readable_time(time.time()-start_time)
+            if temp.USERS_CANCEL:
+                temp.USERS_CANCEL = False
+                await b_sts.edit(f"Users broadcast Cancelled!\nCompleted in {time_taken}\n\nTotal Users: <code>{total_users}</code>\nCompleted: <code>{done} / {total_users}</code>\nSuccess: <code>{success}</code>")
+                return
+            sts = await broadcast_messages(int(user['id']), b_msg, pin)
+            if sts == 'Success':
+                success += 1
+            elif sts == 'Error':
+                failed += 1
+            done += 1
+            if not done % 20:
+                btn = [[
+                    InlineKeyboardButton('CANCEL', callback_data='broadcast_cancel#users')
+                ]]
+                await b_sts.edit(f"Users broadcast in progress...\n\nTotal Users: <code>{total_users}</code>\nCompleted: <code>{done} / {total_users}</code>\nSuccess: <code>{success}</code>", reply_markup=InlineKeyboardMarkup(btn))
+        await b_sts.edit(f"Users broadcast completed.\nCompleted in {time_taken}\n\nTotal Users: <code>{total_users}</code>\nCompleted: <code>{done} / {total_users}</code>\nSuccess: <code>{success}</code>")
+
+
+@Client.on_message(filters.command(["grp_broadcast", "pin_grp_broadcast"]) & filters.user(ADMINS) & filters.reply)
+async def groups_broadcast(bot, message):
+    if lock.locked():
+        return await message.reply('Currently broadcast processing, Wait for complete.')
+    if message.command[0] == 'pin_grp_broadcast':
+        pin = True
+    else:
+        pin = False
+    chats = await db.get_all_chats()
+    b_msg = message.reply_to_message
+    b_sts = await message.reply_text(text='Broadcasting your groups messages...')
+    start_time = time.time()
+    total_chats = await db.total_chat_count()
+    done = 0
+    failed = 0
+    success = 0
+
+    async with lock:
+        for chat in chats:
+            time_taken = get_readable_time(time.time()-start_time)
+            if temp.GROUPS_CANCEL:
+                temp.GROUPS_CANCEL = False
+                await b_sts.edit(f"Groups broadcast Cancelled!\nCompleted in {time_taken}\n\nTotal Groups: <code>{total_chats}</code>\nCompleted: <code>{done} / {total_chats}</code>\nSuccess: <code>{success}</code>\nFailed: <code>{failed}</code>")
+                return
+            sts = await groups_broadcast_messages(int(chat['id']), b_msg, pin)
+            if sts == 'Success':
+                success += 1
+            elif sts == 'Error':
+                failed += 1
+            done += 1
+            if not done % 20:
+                btn = [[
+                    InlineKeyboardButton('CANCEL', callback_data='broadcast_cancel#groups')
+                ]]
+                await b_sts.edit(f"Groups groadcast in progress...\n\nTotal Groups: <code>{total_chats}</code>\nCompleted: <code>{done} / {total_chats}</code>\nSuccess: <code>{success}</code>\nFailed: <code>{failed}</code>", reply_markup=InlineKeyboardMarkup(btn))    
+        await b_sts.edit(f"Groups broadcast completed.\nCompleted in {time_taken}\n\nTotal Groups: <code>{total_chats}</code>\nCompleted: <code>{done} / {total_chats}</code>\nSuccess: <code>{success}</code>\nFailed: <code>{failed}</code>")
+from hydrogram import Client, filters
+from info import INDEX_CHANNELS, INDEX_EXTENSIONS
+from database.ia_filterdb import save_file
+
+media_filter = filters.document | filters.video
+
+
+@Client.on_message(filters.chat(INDEX_CHANNELS) & media_filter)
+async def media(bot, message):
+    """Media Handler"""
+    media = getattr(message, message.media.value, None)
+    if (str(media.file_name).lower()).endswith(tuple(INDEX_EXTENSIONS)):
+        media.caption = message.caption
+        await save_file(media)
+import os
+import random
+import string
+import asyncio
+from time import time as time_now
+from time import monotonic
+import datetime
+from Script import script
+from hydrogram import Client, filters, enums
+from hydrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from database.ia_filterdb import db_count_documents, second_db_count_documents, get_file_details, delete_files
+from database.users_chats_db import db
+from datetime import datetime, timedelta
+from info import IS_PREMIUM, PRE_DAY_AMOUNT, RECEIPT_SEND_USERNAME, URL, BIN_CHANNEL, SECOND_FILES_DATABASE_URL, STICKERS, INDEX_CHANNELS, ADMINS, IS_VERIFY, VERIFY_TUTORIAL, VERIFY_EXPIRE, SHORTLINK_API, SHORTLINK_URL, DELETE_TIME, SUPPORT_LINK, UPDATES_LINK, LOG_CHANNEL, PICS, IS_STREAM, REACTIONS, PM_FILE_DELETE_TIME
+from utils import is_premium, upload_image, get_settings, get_size, is_subscribed, is_check_admin, get_shortlink, get_verify_status, update_verify_status, save_group_settings, temp, get_readable_time, get_wish, get_seconds
+
+async def del_stk(s):
+    await asyncio.sleep(3)
+    await s.delete()
+
+@Client.on_message(filters.command("start") & filters.incoming)
+async def start(client, message):
+    if message.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
+        if not await db.get_chat(message.chat.id):
+            total = await client.get_chat_members_count(message.chat.id)
+            username = f'@{message.chat.username}' if message.chat.username else 'Private'
+            await client.send_message(LOG_CHANNEL, script.NEW_GROUP_TXT.format(message.chat.title, message.chat.id, username, total))       
+            await db.add_chat(message.chat.id, message.chat.title)
+        wish = get_wish()
+        user = message.from_user.mention if message.from_user else "Dear"
+        btn = [[
+            InlineKeyboardButton('⚡️ ᴜᴘᴅᴀᴛᴇs ᴄʜᴀɴɴᴇʟ ⚡️', url=UPDATES_LINK),
+            InlineKeyboardButton('💡 sᴜᴘᴘᴏʀᴛ ɢʀᴏᴜᴘ 💡', url=SUPPORT_LINK)
+        ]]
+        await message.reply(text=f"<b>ʜᴇʏ {user}, <i>{wish}</i>\nʜᴏᴡ ᴄᴀɴ ɪ ʜᴇʟᴘ ʏᴏᴜ??</b>", reply_markup=InlineKeyboardMarkup(btn))
+        return 
+        
+    try:
+        await message.react(emoji=random.choice(REACTIONS), big=True)
+    except:
+        await message.react(emoji="⚡️", big=True)
+
+    d = await client.send_sticker(message.chat.id, random.choice(STICKERS))
+    asyncio.create_task(del_stk(d))
+
+    if not await db.is_user_exist(message.from_user.id):
+        await db.add_user(message.from_user.id, message.from_user.first_name)
+        await client.send_message(LOG_CHANNEL, script.NEW_USER_TXT.format(message.from_user.mention, message.from_user.id))
+
+    verify_status = await get_verify_status(message.from_user.id)
+    if verify_status['is_verified'] and datetime.datetime.now() > verify_status['expire_time']:
+        await update_verify_status(message.from_user.id, is_verified=False)
+
+
+    if (len(message.command) != 2) or (len(message.command) == 2 and message.command[1] == 'start'):
+        buttons = [[
+            InlineKeyboardButton("+ ᴀᴅᴅ ᴍᴇ ᴛᴏ ʏᴏᴜʀ ɢʀᴏᴜᴘ +", url=f'http://t.me/{temp.U_NAME}?startgroup=start')
+        ],[
+            InlineKeyboardButton('ℹ️ ᴜᴘᴅᴀᴛᴇs', url=UPDATES_LINK),
+            InlineKeyboardButton('🧑‍💻 sᴜᴘᴘᴏʀᴛ', url=SUPPORT_LINK)
+        ],[
+            InlineKeyboardButton('👨‍🚒 ʜᴇʟᴘ', callback_data='help'),
+            InlineKeyboardButton('🔎 sᴇᴀʀᴄʜ ɪɴʟɪɴᴇ', switch_inline_query_current_chat=''),
+            InlineKeyboardButton('📚 ᴀʙᴏᴜᴛ', callback_data='about')
+        ],[
+            InlineKeyboardButton('🤑 Buy Premium', url=f"https://t.me/{temp.U_NAME}?start=premium")
+        ]]
+        reply_markup = InlineKeyboardMarkup(buttons)
+        await message.reply_photo(
+            photo=random.choice(PICS),
+            caption=script.START_TXT.format(message.from_user.mention, get_wish()),
+            reply_markup=reply_markup,
+            parse_mode=enums.ParseMode.HTML
+        )
+        return
+
+    mc = message.command[1]
+
+    if mc == 'premium':
+        return await plan(client, message)
+    
+    if mc.startswith('settings'):
+        _, group_id = message.command[1].split("_")
+        if not await is_check_admin(client, (int(group_id)), message.from_user.id):
+            return await message.reply("You not admin in this group.")
+        btn = await get_grp_stg(int(group_id))
+        chat = await client.get_chat(int(group_id))
+        return await message.reply(f"Change your settings for <b>'{chat.title}'</b> as your wish. ⚙", reply_markup=InlineKeyboardMarkup(btn))
+
+
+    if mc.startswith('inline_fsub'):
+        btn = await is_subscribed(client, message)
+        if btn:
+            reply_markup = InlineKeyboardMarkup(btn)
+            await message.reply(f"Please join my 'Updates Channel' and use inline search. 👍",
+                reply_markup=reply_markup,
+                parse_mode=enums.ParseMode.HTML
+            )
+            return 
+
+    if mc.startswith('verify'):
+        _, token = mc.split("_", 1)
+        verify_status = await get_verify_status(message.from_user.id)
+        if verify_status['verify_token'] != token:
+            return await message.reply("Your verify token is invalid.")
+        expiry_time = datetime.datetime.now() + datetime.timedelta(seconds=VERIFY_EXPIRE)
+        await update_verify_status(message.from_user.id, is_verified=True, expire_time=expiry_time)
+        if verify_status["link"] == "":
+            reply_markup = None
+        else:
+            btn = [[
+                InlineKeyboardButton("📌 Get File 📌", url=f'https://t.me/{temp.U_NAME}?start={verify_status["link"]}')
+            ]]
+            reply_markup = InlineKeyboardMarkup(btn)
+        await message.reply(f"✅ You successfully verified until: {get_readable_time(VERIFY_EXPIRE)}", reply_markup=reply_markup, protect_content=True)
+        return
+    
+    verify_status = await get_verify_status(message.from_user.id)
+    if IS_VERIFY and not verify_status['is_verified'] and not await is_premium(message.from_user.id, client):
+        token = ''.join(random.choices(string.ascii_letters + string.digits, k=10))
+        await update_verify_status(message.from_user.id, verify_token=token, link="" if mc == 'inline_verify' else mc)
+        link = await get_shortlink(SHORTLINK_URL, SHORTLINK_API, f'https://t.me/{temp.U_NAME}?start=verify_{token}')
+        btn = [[
+            InlineKeyboardButton("🧿 Verify 🧿", url=link)
+        ],[
+            InlineKeyboardButton('🗳 Tutorial 🗳', url=VERIFY_TUTORIAL)
+        ]]
+        await message.reply("You not verified today! Kindly verify now. 🔐", reply_markup=InlineKeyboardMarkup(btn), protect_content=True)
+        return
+
+    btn = await is_subscribed(client, message)
+    if btn:
+        btn.append(
+            [InlineKeyboardButton("🔁 Try Again 🔁", callback_data=f"checksub#{mc}")]
+        )
+        reply_markup = InlineKeyboardMarkup(btn)
+        await message.reply_photo(
+            photo=random.choice(PICS),
+            caption=f"👋 Hello {message.from_user.mention},\n\nPlease join my 'Updates Channel' and try again. 😇",
+            reply_markup=reply_markup,
+            parse_mode=enums.ParseMode.HTML
+        )
+        return 
+        
+    if mc.startswith('all'):
+        _, grp_id, key = mc.split("_", 2)
+        files = temp.FILES.get(key)
+        if not files:
+            return await message.reply('No Such All Files Exist!')
+        settings = await get_settings(int(grp_id))
+        file_ids = []
+        total_files = await message.reply(f"<b><i>🗂 Total files - <code>{len(files)}</code></i></b>")
+        for file in files:
+            CAPTION = settings['caption']
+            f_caption = CAPTION.format(
+                file_name=file['file_name'],
+                file_size=get_size(file['file_size']),
+                file_caption=file['caption']
+            )      
+            if IS_STREAM:
+                btn = [[
+                    InlineKeyboardButton("✛ ᴡᴀᴛᴄʜ & ᴅᴏᴡɴʟᴏᴀᴅ ✛", callback_data=f"stream#{file['_id']}")
+                ],[
+                    InlineKeyboardButton('⚡️ ᴜᴘᴅᴀᴛᴇs', url=UPDATES_LINK),
+                    InlineKeyboardButton('💡 ꜱᴜᴘᴘᴏʀᴛ', url=SUPPORT_LINK)
+                ],[
+                    InlineKeyboardButton('⁉️ ᴄʟᴏsᴇ ⁉️', callback_data='close_data')
+                ]]
+            else:
+                btn = [[
+                    InlineKeyboardButton('⚡️ ᴜᴘᴅᴀᴛᴇs', url=UPDATES_LINK),
+                    InlineKeyboardButton('💡 ꜱᴜᴘᴘᴏʀᴛ', url=SUPPORT_LINK)
+                ],[
+                    InlineKeyboardButton('⁉️ ᴄʟᴏsᴇ ⁉️', callback_data='close_data')
+                ]]
+
+            msg = await client.send_cached_media(
+                chat_id=message.from_user.id,
+                file_id=file['_id'],
+                caption=f_caption,
+                protect_content=False,
+                reply_markup=InlineKeyboardMarkup(btn)
+            )
+            file_ids.append(msg.id)
+
+        time = get_readable_time(PM_FILE_DELETE_TIME)
+        vp = await message.reply(f"Nᴏᴛᴇ: Tʜɪs ғɪʟᴇs ᴡɪʟʟ ʙᴇ ᴅᴇʟᴇᴛᴇ ɪɴ {time} ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛs. Sᴀᴠᴇ ᴛʜᴇ ғɪʟᴇs ᴛᴏ sᴏᴍᴇᴡʜᴇʀᴇ ᴇʟsᴇ")
+        await asyncio.sleep(PM_FILE_DELETE_TIME)
+        buttons = [[InlineKeyboardButton('ɢᴇᴛ ғɪʟᴇs ᴀɢᴀɪɴ', callback_data=f"get_del_send_all_files#{grp_id}#{key}")]] 
+        await client.delete_messages(
+            chat_id=message.chat.id,
+            message_ids=file_ids + [total_files.id]
+        )
+        await vp.edit("Tʜᴇ ғɪʟᴇ ʜᴀs ʙᴇᴇɴ ɢᴏɴᴇ ! Cʟɪᴄᴋ ɢɪᴠᴇɴ ʙᴜᴛᴛᴏɴ ᴛᴏ ɢᴇᴛ ɪᴛ ᴀɢᴀɪɴ.", reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    type_, grp_id, file_id = mc.split("_", 2)
+    files_ = await get_file_details(file_id)
+    if not files_:
+        return await message.reply('No Such File Exist!')
+    files = files_
+    settings = await get_settings(int(grp_id))
+    if type_ != 'shortlink' and settings['shortlink'] and not await is_premium(message.from_user.id, client):
+        link = await get_shortlink(settings['url'], settings['api'], f"https://t.me/{temp.U_NAME}?start=shortlink_{grp_id}_{file_id}")
+        btn = [[
+            InlineKeyboardButton("♻️ Get File ♻️", url=link)
+        ],[
+            InlineKeyboardButton("📍 ʜᴏᴡ ᴛᴏ ᴏᴘᴇɴ ʟɪɴᴋ 📍", url=settings['tutorial'])
+        ]]
+        await message.reply(f"[{get_size(files['file_size'])}] {files['file_name']}\n\nYour file is ready, Please get using this link. 👍", reply_markup=InlineKeyboardMarkup(btn), protect_content=True)
+        return
+            
+    CAPTION = settings['caption']
+    f_caption = CAPTION.format(
+        file_name = files['file_name'],
+        file_size = get_size(files['file_size']),
+        file_caption=files['caption']
+    )
+    if IS_STREAM:
+        btn = [[
+            InlineKeyboardButton("✛ ᴡᴀᴛᴄʜ & ᴅᴏᴡɴʟᴏᴀᴅ ✛", callback_data=f"stream#{file_id}")
+        ],[
+            InlineKeyboardButton('⚡️ ᴜᴘᴅᴀᴛᴇs', url=UPDATES_LINK),
+            InlineKeyboardButton('💡 ꜱᴜᴘᴘᴏʀᴛ', url=SUPPORT_LINK)
+        ],[
+            InlineKeyboardButton('⁉️ ᴄʟᴏsᴇ ⁉️', callback_data='close_data')
+        ]]
+    else:
+        btn = [[
+            InlineKeyboardButton('⚡️ ᴜᴘᴅᴀᴛᴇs', url=UPDATES_LINK),
+            InlineKeyboardButton('💡 ꜱᴜᴘᴘᴏʀᴛ', url=SUPPORT_LINK)
+        ],[
+            InlineKeyboardButton('⁉️ ᴄʟᴏsᴇ ⁉️', callback_data='close_data')
+        ]]
+    vp = await client.send_cached_media(
+        chat_id=message.from_user.id,
+        file_id=file_id,
+        caption=f_caption,
+        protect_content=False,
+        reply_markup=InlineKeyboardMarkup(btn)
+    )
+    time = get_readable_time(PM_FILE_DELETE_TIME)
+    msg = await vp.reply(f"Nᴏᴛᴇ: Tʜɪs ᴍᴇssᴀɢᴇ ᴡɪʟʟ ʙᴇ ᴅᴇʟᴇᴛᴇ ɪɴ {time} ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛs. Sᴀᴠᴇ ᴛʜᴇ ғɪʟᴇ ᴛᴏ sᴏᴍᴇᴡʜᴇʀᴇ ᴇʟsᴇ")
+    await asyncio.sleep(PM_FILE_DELETE_TIME)
+    btns = [[
+        InlineKeyboardButton('ɢᴇᴛ ғɪʟᴇ ᴀɢᴀɪɴ', callback_data=f"get_del_file#{grp_id}#{file_id}")
+    ]]
+    await msg.delete()
+    await vp.delete()
+    await vp.reply("Tʜᴇ ғɪʟᴇ ʜᴀs ʙᴇᴇɴ ɢᴏɴᴇ ! Cʟɪᴄᴋ ɢɪᴠᴇɴ ʙᴜᴛᴛᴏɴ ᴛᴏ ɢᴇᴛ ɪᴛ ᴀɢᴀɪɴ.", reply_markup=InlineKeyboardMarkup(btns))
+
+
+@Client.on_message(filters.command('link'))
+async def link(bot, message):
+    msg = message.reply_to_message
+    if not msg:
+        return await message.reply('Reply to media')
+    try:
+        media = getattr(msg, msg.media.value)
+        msg = await bot.send_cached_media(chat_id=BIN_CHANNEL, file_id=media.file_id)
+        watch = f"{URL}watch/{msg.id}"
+        download = f"{URL}download/{msg.id}"
+        btn=[[
+            InlineKeyboardButton("ᴡᴀᴛᴄʜ ᴏɴʟɪɴᴇ", url=watch),
+            InlineKeyboardButton("ꜰᴀsᴛ ᴅᴏᴡɴʟᴏᴀᴅ", url=download)
+        ],[
+            InlineKeyboardButton('❌ ᴄʟᴏsᴇ ❌', callback_data='close_data')
+        ]]
+        await message.reply('Here is your link', reply_markup=InlineKeyboardMarkup(btn))
+    except:
+        await message.reply('Unsupported file')
+
+@Client.on_message(filters.command('index_channels'))
+async def channels_info(bot, message):
+    user_id = message.from_user.id
+    if user_id not in ADMINS:
+        await message.delete()
+        return
+    ids = INDEX_CHANNELS
+    if not ids:
+        return await message.reply("Not set INDEX_CHANNELS")
+    text = '**Indexed Channels:**\n\n'
+    for id in ids:
+        chat = await bot.get_chat(id)
+        text += f'{chat.title}\n'
+    text += f'\n**Total:** {len(ids)}'
+    await message.reply(text)
+
+@Client.on_message(filters.command('stats'))
+async def stats(bot, message):
+    user_id = message.from_user.id
+    if user_id not in ADMINS:
+        await message.delete()
+        return
+    files = db_count_documents()
+    users = await db.total_users_count()
+    chats = await db.total_chat_count()
+    prm = db.get_premium_count()
+    used_files_db_size = get_size(await db.get_files_db_size())
+    used_data_db_size = get_size(await db.get_data_db_size())
+
+    if SECOND_FILES_DATABASE_URL:
+        secnd_files_db_used_size = get_size(await db.get_second_files_db_size())
+        secnd_files = second_db_count_documents()
+    else:
+        secnd_files_db_used_size = '-'
+        secnd_files = '-'
+
+    uptime = get_readable_time(time_now() - temp.START_TIME)
+    await message.reply_text(script.STATUS_TXT.format(users, prm, chats, used_data_db_size, files, used_files_db_size, secnd_files, secnd_files_db_used_size, uptime))    
+    
+
+
+async def get_grp_stg(group_id):
+    settings = await get_settings(group_id)
+    btn = [[
+        InlineKeyboardButton('Edit IMDb template', callback_data=f'imdb_setgs#{group_id}')
+    ],[
+        InlineKeyboardButton('Edit Shortlink', callback_data=f'shortlink_setgs#{group_id}')
+    ],[
+        InlineKeyboardButton('Edit File Caption', callback_data=f'caption_setgs#{group_id}')
+    ],[
+        InlineKeyboardButton('Edit Welcome', callback_data=f'welcome_setgs#{group_id}')
+    ],[
+        InlineKeyboardButton('Edit tutorial link', callback_data=f'tutorial_setgs#{group_id}')
+    ],[
+        InlineKeyboardButton(f'IMDb Poster {"✅" if settings["imdb"] else "❌"}', callback_data=f'bool_setgs#imdb#{settings["imdb"]}#{group_id}')
+    ],[
+        InlineKeyboardButton(f'Spelling Check {"✅" if settings["spell_check"] else "❌"}', callback_data=f'bool_setgs#spell_check#{settings["spell_check"]}#{group_id}')
+    ],[
+        InlineKeyboardButton(f"Auto Delete - {get_readable_time(DELETE_TIME)}" if settings["auto_delete"] else "Auto Delete ❌", callback_data=f'bool_setgs#auto_delete#{settings["auto_delete"]}#{group_id}')
+    ],[
+        InlineKeyboardButton(f'Welcome {"✅" if settings["welcome"] else "❌"}', callback_data=f'bool_setgs#welcome#{settings["welcome"]}#{group_id}')
+    ],[
+        InlineKeyboardButton(f'Shortlink {"✅" if settings["shortlink"] else "❌"}', callback_data=f'bool_setgs#shortlink#{settings["shortlink"]}#{group_id}')
+    ],[
+        InlineKeyboardButton(f"Result Page - Link" if settings["links"] else "Result Page - Button", callback_data=f'bool_setgs#links#{settings["links"]}#{group_id}')
+    ]]
+    return btn
+    
+@Client.on_message(filters.command('settings'))
+async def settings(client, message):
+    group_id = message.chat.id
+    if message.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
+        if not await is_check_admin(client, group_id, message.from_user.id):
+            return await message.reply_text('You not admin in this group.')
+        btn = [[
+            InlineKeyboardButton("Open Here", callback_data='open_group_settings')
+        ],[
+            InlineKeyboardButton("Open In PM", callback_data='open_pm_settings')
+        ]]
+        await message.reply_text('Where do you want to open the settings menu?', reply_markup=InlineKeyboardMarkup(btn))
+    elif message.chat.type == enums.ChatType.PRIVATE:
+        cons = db.get_connections(message.from_user.id)
+        if not cons:
+            return await message.reply_text("No groups found! Use this command group and open in PM")
+        buttons = []
+        for con in cons:
+            try:
+                chat = await client.get_chat(con)
+                buttons.append(
+                    [InlineKeyboardButton(text=chat.title, callback_data=f'back_setgs#{chat.id}')]
+                )
+            except:
+                pass
+        await message.reply_text('Select the group whose settings you want to change.\n\nIf your group not showing here? Use this command in your group and open in PM or send <code>/connect</code> command in your group.', reply_markup=InlineKeyboardMarkup(buttons))
+
+
+@Client.on_message(filters.command('connect'))
+async def connect(client, message):
+    if message.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
+        group_id = message.chat.id
+        db.add_connect(group_id, message.from_user.id)
+        await message.reply_text('Successfully connected this group to PM, now you can manage your group using /settings inside your PM')
+    elif message.chat.type == enums.ChatType.PRIVATE:
+        if len(message.command) > 1:
+            group_id = message.command[1]
+            if not await is_check_admin(client, int(group_id), message.from_user.id):
+                return await message.reply_text('You not admin in this group.')
+            chat = await client.get_chat(int(group_id))
+            db.add_connect(int(group_id), message.from_user.id)
+            await message.reply_text(f'Successfully connected {chat.title} group to PM')
+        else:
+            await message.reply_text('Usage: /connect group_id\nor use /connect in group')
+
+
+@Client.on_message(filters.command('delete'))
+async def delete_file(bot, message):
+    user_id = message.from_user.id
+    if user_id not in ADMINS:
+        await message.delete()
+        return
+    try:
+        query = message.text.split(" ", 1)[1]
+    except:
+        return await message.reply_text("Command Incomplete!\nUsage: /delete query")
+    btn = [[
+        InlineKeyboardButton("YES", callback_data=f"delete_{query}")
+    ],[
+        InlineKeyboardButton("CLOSE", callback_data="close_data")
+    ]]
+    await message.reply_text(f"Do you want to delete all: {query} ?", reply_markup=InlineKeyboardMarkup(btn))
+ 
+
+
+@Client.on_message(filters.command('img_2_link'))
+async def img_2_link(bot, message):
+    reply_to_message = message.reply_to_message
+    if not reply_to_message:
+        return await message.reply('Reply to any photo')
+    file = reply_to_message.photo
+    if file is None:
+        return await message.reply('Invalid media.')
+    text = await message.reply_text(text="ᴘʀᴏᴄᴇssɪɴɢ....")   
+    path = await reply_to_message.download()  
+    response = upload_image(path)
+    if not response:
+         await text.edit_text(text="Upload failed!")
+         return    
+    try:
+        os.remove(path)
+    except:
+        pass
+    await text.edit_text(f"<b>❤️ Your link ready 👇\n\n{response}</b>", disable_web_page_preview=True)
+
+@Client.on_message(filters.command('ping'))
+async def ping(client, message):
+    start_time = monotonic()
+    msg = await message.reply("👀")
+    end_time = monotonic()
+    await msg.edit(f'{round((end_time - start_time) * 1000)} ms')
+    
+
+@Client.on_message(filters.command('myplan') & filters.private)
+async def myplan(client, message):
+    if not IS_PREMIUM:
+        return await message.reply('Premium feature was disabled by admin')
+    mp = db.get_plan(message.from_user.id)
+    if not await is_premium(message.from_user.id, client):
+        btn = [[
+            InlineKeyboardButton('Activate Trial', callback_data='activate_trial'),
+            InlineKeyboardButton('Activate Plan', callback_data='activate_plan')
+        ]]
+        return await message.reply('You dont have any premium plan, please use /plan to activate plan', reply_markup=InlineKeyboardMarkup(btn))
+    await message.reply(f"You activated {mp['plan']} plan\nExpire: {mp['expire'].strftime('%Y.%m.%d %H:%M:%S')}")
+
+
+@Client.on_message(filters.command('plan') & filters.private)
+async def plan(client, message):
+    if not IS_PREMIUM:
+        return await message.reply('Premium feature was disabled by admin')
+    btn = [[
+        InlineKeyboardButton('Activate Trial', callback_data='activate_trial')
+    ],[
+        InlineKeyboardButton('Activate Plan', callback_data='activate_plan')
+    ]]
+    await message.reply(script.PLAN_TXT.format(PRE_DAY_AMOUNT, RECEIPT_SEND_USERNAME), reply_markup=InlineKeyboardMarkup(btn))
+
+
+@Client.on_message(filters.command('add_prm') & filters.user(ADMINS))
+async def add_prm(bot, message):
+    if not IS_PREMIUM:
+        return await message.reply('Premium feature was disabled')
+    try:
+        _, user_id, d = message.text.split(' ')
+    except:
+        return await message.reply('Usage: /add_prm user_id 1d')
+    try:
+        d = int(d[:-1])
+    except:
+        return await message.reply('Not valid days, use: 1d, 7d, 30d, 365d, etc...')
+    try:
+        user = await bot.get_users(user_id)
+    except Exception as e:
+        return await message.reply(f'Error: {e}')
+    if user.id in ADMINS:
+        return await message.reply('ADMINS is already premium')
+    if not await is_premium(user.id, bot):
+        mp = db.get_plan(user.id)
+        ex = datetime.now() + timedelta(days=d)
+        mp['expire'] = ex
+        mp['plan'] = f'{d} days'
+        mp['premium'] = True
+        db.update_plan(user.id, mp)
+        await message.reply(f"Given premium to {user.mention}\nExpire: {ex.strftime('%Y.%m.%d %H:%M:%S')}")
+        try:
+            await bot.send_message(user.id, f"Your now premium user\nExpire: {ex.strftime('%Y.%m.%d %H:%M:%S')}")
+        except:
+            pass
+    else:
+        await message.reply(f"{user.mention} is already premium user")
+
+
+
+@Client.on_message(filters.command('rm_prm') & filters.user(ADMINS))
+async def rm_prm(bot, message):
+    if not IS_PREMIUM:
+        return await message.reply('Premium feature was disabled')
+    try:
+        _, user_id = message.text.split(' ')
+    except:
+        return await message.reply('Usage: /rm_prm user_id')
+    try:
+        user = await bot.get_users(user_id)
+    except Exception as e:
+        return await message.reply(f'Error: {e}')
+    if user.id in ADMINS:
+        return await message.reply('ADMINS is already premium')
+    if not await is_premium(user.id, bot):
+        await message.reply(f"{user.mention} is not premium user")
+    else:
+        mp = db.get_plan(user.id)
+        mp['expire'] = ''
+        mp['plan'] = ''
+        mp['premium'] = False
+        db.update_plan(user.id, mp)
+        await message.reply(f"{user.mention} is no longer premium user")
+        try:
+            await bot.send_message(user.id, "Your premium plan was removed by admin")
+        except:
+            pass
+
+
+@Client.on_message(filters.command('prm_list') & filters.user(ADMINS))
+async def prm_list(bot, message):
+    if not IS_PREMIUM:
+        return await message.reply('Premium feature was disabled')
+    tx = await message.reply('Getting list of premium users')
+    pr = [i['id'] for i in db.get_premium_users() if i['status']['premium']]
+    t = 'premium users saved in database are:\n\n'
+    for p in pr:
+        try:
+            u = await bot.get_users(p)
+            t += f"{u.mention} : {p}\n"
+        except:
+            t += f"{p}\n"
+    await tx.edit_text(t)
+
+
+@Client.on_message(filters.command('set_fsub') & filters.user(ADMINS))
+async def set_fsub(bot, message):
+    try:
+        _, ids = message.text.split(' ', 1)
+    except ValueError:
+        return await message.reply('usage: /set_fsub -100xxx -100xxx')
+    title = ""
+    for id in ids.split(' '):
+        try:
+            chat = await bot.get_chat(int(id))
+            title += f'{chat.title}\n'
+        except Exception as e:
+            return await message.reply(f'ERROR: {e}')
+    db.update_bot_sttgs('FORCE_SUB_CHANNELS', ids)
+    await message.reply(f'added force subscribe channels: {title}')
+
+        
+
+@Client.on_message(filters.command('set_req_fsub') & filters.user(ADMINS))
+async def set_req_fsub(bot, message):
+    try:
+        _, id = message.text.split(' ', 1)
+    except ValueError:
+        return await message.reply('usage: /set_req_fsub -100xxx')
+    try:
+        chat = await bot.get_chat(int(id))
+    except Exception as e:
+        return await message.reply(f'ERROR: {e}')
+    db.update_bot_sttgs('REQUEST_FORCE_SUB_CHANNELS', id)
+    await message.reply(f'added request force subscribe channel: {chat.title}')
+
+
+@Client.on_message(filters.command('off_auto_filter') & filters.user(ADMINS))
+async def off_auto_filter(bot, message):
+    db.update_bot_sttgs('AUTO_FILTER', False)
+    await message.reply('Successfully turned off auto filter for all groups')
+
+
+@Client.on_message(filters.command('on_auto_filter') & filters.user(ADMINS))
+async def on_auto_filter(bot, message):
+    db.update_bot_sttgs('AUTO_FILTER', True)
+    await message.reply('Successfully turned on auto filter for all groups')
+
+
+
+@Client.on_message(filters.command('off_pm_search') & filters.user(ADMINS))
+async def off_pm_search(bot, message):
+    db.update_bot_sttgs('PM_SEARCH', False)
+    await message.reply('Successfully turned off pm search for all users')
+
+
+@Client.on_message(filters.command('on_pm_search') & filters.user(ADMINS))
+async def on_pm_search(bot, message):
+    db.update_bot_sttgs('PM_SEARCH', True)
+    await message.reply('Successfully turned on pm search for all users')
+from hydrogram import Client, filters
+from hydrogram.errors import MessageTooLong
+import sys
+import os
+import traceback
+from io import StringIO
+from info import ADMINS
+
+@Client.on_message(filters.command("eval") & filters.user(ADMINS))
+async def executor(client, message):
+    try:
+        code = message.text.split(" ", 1)[1]
+    except:
+        return await message.reply('Command Incomplete!\nUsage: /eval your_python_code')
+    old_stderr = sys.stderr
+    old_stdout = sys.stdout
+    redirected_output = sys.stdout = StringIO()
+    redirected_error = sys.stderr = StringIO()
+    stdout, stderr, exc = None, None, None
+    try:
+        await aexec(code, client, message)
+    except:
+        exc = traceback.format_exc()
+    stdout = redirected_output.getvalue()
+    stderr = redirected_error.getvalue()
+    sys.stdout = old_stdout
+    sys.stderr = old_stderr
+    evaluation = ""
+    if exc:
+        evaluation = exc
+    elif stderr:
+        evaluation = stderr
+    elif stdout:
+        evaluation = stdout
+    else:
+        evaluation = "Success!"
+    final_output = f"Output:\n\n<code>{evaluation}</code>"
+    try:
+        await message.reply(final_output)
+    except MessageTooLong:
+        with open('eval.txt', 'w+') as outfile:
+            outfile.write(final_output)
+        await message.reply_document('eval.txt')
+        os.remove('eval.txt')
+
+
+async def aexec(code, client, message):
+    exec(
+        "async def __aexec(client, message): "
+        + "".join(f"\n {a}" for a in code.split("\n"))
+    )
+    return await locals()["__aexec"](client, message)
+from hydrogram import Client, filters
+from utils import is_check_admin
+from hydrogram.types import ChatPermissions, InlineKeyboardMarkup, InlineKeyboardButton
+
+
+@Client.on_message(filters.command('manage') & filters.group)
+async def members_management(client, message):
+    if not await is_check_admin(client, message.chat.id, message.from_user.id):
+        return await message.reply_text('You not admin in this group.')
+    btn = [[
+        InlineKeyboardButton('Unmute All', callback_data='unmute_all_members'),
+        InlineKeyboardButton('Unban All', callback_data='unban_all_members')
+    ],[
+        InlineKeyboardButton('Kick Muted Users', callback_data='kick_muted_members'),
+        InlineKeyboardButton('Kick Deleted Accounts', callback_data='kick_deleted_accounts_members')
+    ]]
+    await message.reply_text("Select one of function to manage members.", reply_markup=InlineKeyboardMarkup(btn))
+  
+  
+@Client.on_message(filters.command('ban') & filters.group)
+async def ban_chat_user(client, message):
+    if not await is_check_admin(client, message.chat.id, message.from_user.id):
+        return await message.reply_text('You not admin in this group.')
+    if message.reply_to_message and message.reply_to_message.from_user:
+        user_id = message.reply_to_message.from_user.username or message.reply_to_message.from_user.id
+    else:
+        try:
+            user_id = message.text.split(" ", 1)[1]
+        except IndexError:
+            return await message.reply_text("Reply to any user message or give user id, username")
+    try:
+        user_id = int(user_id)
+    except ValueError:
+        pass
+    try:
+        user = (await client.get_chat_member(message.chat.id, user_id)).user
+    except:
+        return await message.reply_text("Can't find you given user in this group")
+    try:
+        await client.ban_chat_member(message.from_user.id, user_id)
+    except:
+        return await message.reply_text("I don't have access to ban user")
+    await message.reply_text(f'Successfully banned {user.mention} from {message.chat.title}')
+
+
+@Client.on_message(filters.command('mute') & filters.group)
+async def mute_chat_user(client, message):
+    if not await is_check_admin(client, message.chat.id, message.from_user.id):
+        return await message.reply_text('You not admin in this group.')
+    if message.reply_to_message and message.reply_to_message.from_user:
+        user_id = message.reply_to_message.from_user.username or message.reply_to_message.from_user.id
+    else:
+        try:
+            user_id = message.text.split(" ", 1)[1]
+        except IndexError:
+            return await message.reply_text("Reply to any user message or give user id, username")
+    try:
+        user_id = int(user_id)
+    except ValueError:
+        pass
+    try:
+        user = (await client.get_chat_member(message.chat.id, user_id)).user
+    except:
+        return await message.reply_text("Can't find you given user in this group")
+    try:
+        await client.restrict_chat_member(message.chat.id, user_id, ChatPermissions())
+    except:
+        return await message.reply_text("I don't have access to mute user")
+    await message.reply_text(f'Successfully muted {user.mention} from {message.chat.title}')
+
+
+@Client.on_message(filters.command(["unban", "unmute"]) & filters.group)
+async def unban_chat_user(client, message):
+    if not await is_check_admin(client, message.chat.id, message.from_user.id):
+        return await message.reply_text('You not admin in this group.')
+    if message.reply_to_message and message.reply_to_message.from_user:
+        user_id = message.reply_to_message.from_user.username or message.reply_to_message.from_user.id
+    else:
+        try:
+            user_id = message.text.split(" ", 1)[1]
+        except IndexError:
+            return await message.reply_text("Reply to any user message or give user id, username")
+    try:
+        user_id = int(user_id)
+    except ValueError:
+        pass
+    try:
+        user = (await client.get_chat_member(message.chat.id, user_id)).user
+    except:
+        return await message.reply_text("Can't find you given user in this group")
+    try:
+        await client.unban_chat_member(message.chat.id, user_id)
+    except:
+        return await message.reply_text(f"I don't have access to {message.command[0]} user")
+    await message.reply_text(f'Successfully {message.command[0]} {user.mention} from {message.chat.title}')
+import re
+import time
+import asyncio
+from hydrogram import Client, filters, enums
+from hydrogram.errors import FloodWait
+from info import ADMINS, INDEX_EXTENSIONS
+from database.ia_filterdb import save_file
+from hydrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from utils import temp, get_readable_time
+
+lock = asyncio.Lock()
+
+@Client.on_callback_query(filters.regex(r'^index'))
+async def index_files(bot, query):
+    _, ident, chat, lst_msg_id, skip = query.data.split("#")
+    if ident == 'yes':
+        msg = query.message
+        await msg.edit("Starting Indexing...")
+        try:
+            chat = int(chat)
+        except:
+            chat = chat
+        await index_files_to_db(int(lst_msg_id), chat, msg, bot, int(skip))
+    elif ident == 'cancel':
+        temp.CANCEL = True
+        await query.message.edit("Trying to cancel Indexing...")
+
+
+@Client.on_message(filters.command('index') & filters.private & filters.user(ADMINS))
+async def send_for_index(bot, message):
+    if lock.locked():
+        return await message.reply('Wait until previous process complete.')
+    i = await message.reply("Forward last message or send last message link.")
+    msg = await bot.listen(chat_id=message.chat.id, user_id=message.from_user.id)
+    await i.delete()
+    if msg.text and msg.text.startswith("https://t.me"):
+        try:
+            msg_link = msg.text.split("/")
+            last_msg_id = int(msg_link[-1])
+            chat_id = msg_link[-2]
+            if chat_id.isnumeric():
+                chat_id = int(("-100" + chat_id))
+        except:
+            await message.reply('Invalid message link!')
+            return
+    elif msg.forward_from_chat and msg.forward_from_chat.type == enums.ChatType.CHANNEL:
+        last_msg_id = msg.forward_from_message_id
+        chat_id = msg.forward_from_chat.username or msg.forward_from_chat.id
+    else:
+        await message.reply('This is not forwarded message or link.')
+        return
+    try:
+        chat = await bot.get_chat(chat_id)
+    except Exception as e:
+        return await message.reply(f'Errors - {e}')
+
+    if chat.type != enums.ChatType.CHANNEL:
+        return await message.reply("I can index only channels.")
+
+    s = await message.reply("Send skip message number.")
+    msg = await bot.listen(chat_id=message.chat.id, user_id=message.from_user.id)
+    await s.delete()
+    try:
+        skip = int(msg.text)
+    except:
+        return await message.reply("Number is invalid.")
+
+    buttons = [[
+        InlineKeyboardButton('YES', callback_data=f'index#yes#{chat_id}#{last_msg_id}#{skip}')
+    ],[
+        InlineKeyboardButton('CLOSE', callback_data='close_data'),
+    ]]
+    reply_markup = InlineKeyboardMarkup(buttons)
+    await message.reply(f'Do you want to index {chat.title} channel?\nTotal Messages: <code>{last_msg_id}</code>', reply_markup=reply_markup)
+
+
+async def index_files_to_db(lst_msg_id, chat, msg, bot, skip):
+    start_time = time.time()
+    total_files = 0
+    duplicate = 0
+    errors = 0
+    deleted = 0
+    no_media = 0
+    unsupported = 0
+    badfiles = 0
+    current = skip
+    
+    async with lock:
+        try:
+            async for message in bot.iter_messages(chat, lst_msg_id, skip):
+                time_taken = get_readable_time(time.time()-start_time)
+                if temp.CANCEL:
+                    temp.CANCEL = False
+                    await msg.edit(f"Successfully Cancelled!\nCompleted in {time_taken}\n\nSaved <code>{total_files}</code> files to Database!\nDuplicate Files Skipped: <code>{duplicate}</code>\nDeleted Messages Skipped: <code>{deleted}</code>\nNon-Media messages skipped: <code>{no_media + unsupported}</code>\nUnsupported Media: <code>{unsupported}</code>\nErrors Occurred: <code>{errors}</code>\nBad Files Ignoref: <code>{badfiles}</code>")
+                    return
+                current += 1
+                if current % 30 == 0:
+                    btn = [[
+                        InlineKeyboardButton('CANCEL', callback_data=f'index#cancel#{chat}#{lst_msg_id}#{skip}')
+                    ]]
+                    try:
+                        await msg.edit_text(text=f"Total messages received: <code>{current}</code>\nTotal messages saved: <code>{total_files}</code>\nDuplicate Files Skipped: <code>{duplicate}</code>\nDeleted Messages Skipped: <code>{deleted}</code>\nNon-Media messages skipped: <code>{no_media + unsupported}</code>\nUnsupported Media: <code>{unsupported}</code>\nErrors Occurred: <code>{errors}</code>\nBad Files Ignoref: <code>{badfiles}</code>", reply_markup=InlineKeyboardMarkup(btn))
+                    except FloodWait as e:
+                        await asyncio.sleep(e.value)
+                if message.empty:
+                    deleted += 1
+                    continue
+                elif not message.media:
+                    no_media += 1
+                    continue
+                elif message.media not in [enums.MessageMediaType.VIDEO, enums.MessageMediaType.DOCUMENT]:
+                    unsupported += 1
+                    continue
+                media = getattr(message, message.media.value, None)
+                if not media:
+                    unsupported += 1
+                    continue
+                elif not (str(media.file_name).lower()).endswith(tuple(INDEX_EXTENSIONS)):
+                    unsupported += 1
+                    continue
+                media.caption = message.caption
+                file_name = re.sub(r"@\w+|(_|\-|\.|\+)", " ", str(media.file_name))
+                sts = await save_file(media)
+                if sts == 'suc':
+                    total_files += 1
+                elif sts == 'dup':
+                    duplicate += 1
+                elif sts == 'err':
+                    errors += 1
+        except Exception as e:
+            await msg.reply(f'Index canceled due to Error - {e}')
+        else:
+            time_taken = get_readable_time(time.time()-start_time)
+            await msg.edit(f'Succesfully saved <code>{total_files}</code> to Database!\nCompleted in {time_taken}\n\nDuplicate Files Skipped: <code>{duplicate}</code>\nDeleted Messages Skipped: <code>{deleted}</code>\nNon-Media messages skipped: <code>{no_media + unsupported}</code>\nUnsupported Media: <code>{unsupported}</code>\nErrors Occurred: <code>{errors}</code>\nBad Files Ignoref: <code>{badfiles}</code>')
+from hydrogram import Client
+from hydrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultCachedDocument, InlineQuery
+from database.ia_filterdb import get_search_results
+from utils import get_size, temp, get_verify_status, is_subscribed, is_premium
+from info import CACHE_TIME, SUPPORT_LINK, UPDATES_LINK, FILE_CAPTION, IS_VERIFY
+
+cache_time = CACHE_TIME
+
+def is_banned(query: InlineQuery):
+    return query.from_user and query.from_user.id in temp.BANNED_USERS
+
+@Client.on_inline_query()
+async def inline_search(bot, query):
+    """Show search results for given inline query"""
+
+    is_fsub = await is_subscribed(bot, query)
+    if is_fsub:
+        await query.answer(results=[],
+                           cache_time=0,
+                           switch_pm_text="Join my Updates Channel :(",
+                           switch_pm_parameter="inline_fsub")
+        return
+
+
+    verify_status = await get_verify_status(query.from_user.id)
+    if IS_VERIFY and not verify_status['is_verified'] and not await is_premium(query.from_user.id, bot):
+        await query.answer(results=[],
+                           cache_time=0,
+                           switch_pm_text="You're not verified today :(",
+                           switch_pm_parameter="inline_verify")
+        return
+    
+    if is_banned(query):
+        await query.answer(results=[],
+                           cache_time=0,
+                           switch_pm_text="You're banned user :(",
+                           switch_pm_parameter="start")
+        return
+
+
+    results = []
+    string = query.query
+    offset = int(query.offset or 0)
+    files, next_offset, total = await get_search_results(string, offset=offset)
+
+    for file in files:
+        reply_markup = get_reply_markup(string)
+        f_caption=FILE_CAPTION.format(
+            file_name=file['file_name'],
+            file_size=get_size(file['file_size']),
+            caption=file['caption']
+        )
+        results.append(
+            InlineQueryResultCachedDocument(
+                title=file['file_name'],
+                document_file_id=file['_id'],
+                caption=f_caption,
+                description=f'Size: {get_size(file["file_size"])}',
+                reply_markup=reply_markup))
+
+    if results:
+        switch_pm_text = f"Results - {total}"
+        if string:
+            switch_pm_text += f' For: {string}'
+        await query.answer(results=results,
+                        is_personal = True,
+                        cache_time=cache_time,
+                        switch_pm_text=switch_pm_text,
+                        switch_pm_parameter="start",
+                        next_offset=str(next_offset))
+    else:
+        switch_pm_text = f'No Results'
+        if string:
+            switch_pm_text += f' For: {string}'
+        await query.answer(results=[],
+                           is_personal = True,
+                           cache_time=cache_time,
+                           switch_pm_text=switch_pm_text,
+                           switch_pm_parameter="start")
+
+
+def get_reply_markup(s):
+    buttons = [[
+        InlineKeyboardButton('🔎 Search Again', switch_inline_query_current_chat=s or '')
+    ],[
+        InlineKeyboardButton('⚡️ ᴜᴘᴅᴀᴛᴇs ᴄʜᴀɴɴᴇʟ ⚡️', url=UPDATES_LINK),
+        InlineKeyboardButton('💡 Support Group 💡', url=SUPPORT_LINK)
+    ]]
+    return InlineKeyboardMarkup(buttons)
+from info import ADMINS
+from speedtest import Speedtest, ConfigRetrievalError, SpeedtestBestServerFailure
+from hydrogram import Client, filters, enums
+from hydrogram.errors import UserNotParticipant
+from hydrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from utils import get_size
+from datetime import datetime
+import os
+
+
+@Client.on_message(filters.command('id'))
+async def showid(client, message):
+    chat_type = message.chat.type
+    replied_to_msg = bool(message.reply_to_message)
+    if replied_to_msg:
+        return await message.reply_text(f"""The forwarded message channel {replied_to_msg.chat.title}'s id is, <code>{replied_to_msg.chat.id}</code>.""")
+    if chat_type == enums.ChatType.PRIVATE:
+        await message.reply_text(f'★ User ID: <code>{message.from_user.id}</code>')
+
+    elif chat_type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
+        await message.reply_text(f'★ Group ID: <code>{message.chat.id}</code>')
+
+    elif chat_type == enums.ChatType.CHANNEL:
+        await message.reply_text(f'★ Channel ID: <code>{message.chat.id}</code>')
+
+
+@Client.on_message(filters.command('speedtest') & filters.user(ADMINS))
+async def speedtest(client, message):
+    #from - https://github.com/weebzone/WZML-X/blob/master/bot/modules/speedtest.py
+    msg = await message.reply_text("Initiating Speedtest...")
+    try:
+        speed = Speedtest()
+        speed.get_best_server()
+    except (ConfigRetrievalError, SpeedtestBestServerFailure):
+        await msg.edit("Can't connect to Server at the Moment, Try Again Later !")
+        return
+    speed.download()
+    speed.upload()
+    speed.results.share()
+    result = speed.results.dict()
+    photo = result['share']
+    text = f'''
+➲ <b>SPEEDTEST INFO</b>
+┠ <b>Upload:</b> <code>{get_size(result['upload'])}/s</code>
+┠ <b>Download:</b>  <code>{get_size(result['download'])}/s</code>
+┠ <b>Ping:</b> <code>{result['ping']} ms</code>
+┠ <b>Time:</b> <code>{datetime.strptime(result['timestamp'], "%Y-%m-%dT%H:%M:%S.%fZ").strftime("%Y-%m-%d %H:%M:%S")}</code>
+┠ <b>Data Sent:</b> <code>{get_size(int(result['bytes_sent']))}</code>
+┖ <b>Data Received:</b> <code>{get_size(int(result['bytes_received']))}</code>
+
+➲ <b>SPEEDTEST SERVER</b>
+┠ <b>Name:</b> <code>{result['server']['name']}</code>
+┠ <b>Country:</b> <code>{result['server']['country']}, {result['server']['cc']}</code>
+┠ <b>Sponsor:</b> <code>{result['server']['sponsor']}</code>
+┠ <b>Latency:</b> <code>{result['server']['latency']}</code>
+┠ <b>Latitude:</b> <code>{result['server']['lat']}</code>
+┖ <b>Longitude:</b> <code>{result['server']['lon']}</code>
+
+➲ <b>CLIENT DETAILS</b>
+┠ <b>IP Address:</b> <code>{result['client']['ip']}</code>
+┠ <b>Latitude:</b> <code>{result['client']['lat']}</code>
+┠ <b>Longitude:</b> <code>{result['client']['lon']}</code>
+┠ <b>Country:</b> <code>{result['client']['country']}</code>
+┠ <b>ISP:</b> <code>{result['client']['isp']}</code>
+┖ <b>ISP Rating:</b> <code>{result['client']['isprating']}</code>
+'''
+    await message.reply_photo(photo=photo, caption=text)
+    await msg.delete()
+
+
+@Client.on_message(filters.command("info"))
+async def who_is(client, message):
+    status_message = await message.reply_text(
+        "Fetching user info..."
+    )
+    if message.reply_to_message:
+        from_user_id = message.reply_to_message.from_user.id
+    elif len(message.command) > 1:
+        from_user_id = message.command[1]
+    else:
+        from_user_id = message.from_user.id
+    try:
+        from_user = await client.get_users(from_user_id)
+    except Exception as error:
+        await status_message.edit(f'Error: {error}')
+        return
+
+    message_out_str = ""
+    message_out_str += f"<b>➲First Name:</b> {from_user.first_name}\n"
+    last_name = from_user.last_name or 'Not have'
+    message_out_str += f"<b>➲Last Name:</b> {last_name}\n"
+    message_out_str += f"<b>➲Telegram ID:</b> <code>{from_user.id}</code>\n"
+    username = f'@{from_user.username}' if from_user.username else 'Not have'
+    dc_id = from_user.dc_id or "Not found"
+    message_out_str += f"<b>➲Data Centre:</b> <code>{dc_id}</code>\n"
+    message_out_str += f"<b>➲Username:</b> {username}\n"
+    message_out_str += f"<b>➲Last Online:</b> {last_online(from_user)}\n"
+    message_out_str += f"<b>➲User 𝖫𝗂𝗇𝗄:</b> <a href='tg://user?id={from_user.id}'><b>Click Here</b></a>\n"
+    if message.chat.type in [enums.ChatType.SUPERGROUP, enums.ChatType.GROUP]:
+        try:
+            chat_member_p = await message.chat.get_member(from_user.id)
+            joined_date = chat_member_p.joined_date.strftime('%Y.%m.%d %H:%M:%S') if chat_member_p.joined_date else 'Not found'
+            message_out_str += (
+                "<b>➲Joined this Chat on:</b> <code>"
+                f"{joined_date}"
+                "</code>\n"
+            )
+        except UserNotParticipant:
+            pass
+    chat_photo = from_user.photo
+    if chat_photo:
+        local_user_photo = await client.download_media(
+            message=chat_photo.big_file_id
+        )
+        await message.reply_photo(
+            photo=local_user_photo,
+            quote=True,
+            caption=message_out_str,
+            parse_mode=enums.ParseMode.HTML,
+            disable_notification=True
+        )
+        os.remove(local_user_photo)
+    else:
+        await message.reply_text(
+            text=message_out_str,
+            quote=True,
+            parse_mode=enums.ParseMode.HTML,
+            disable_notification=True
+        )
+    await status_message.delete()
+
+
+
+def last_online(from_user):
+    time = ""
+    if from_user.is_bot:
+        time += "🤖 Bot :("
+    elif from_user.status == enums.UserStatus.RECENTLY:
+        time += "Recently"
+    elif from_user.status == enums.UserStatus.LAST_WEEK:
+        time += "Within the last week"
+    elif from_user.status == enums.UserStatus.LAST_MONTH:
+        time += "Within the last month"
+    elif from_user.status == enums.UserStatus.LONG_AGO:
+        time += "A long time ago :("
+    elif from_user.status == enums.UserStatus.ONLINE:
+        time += "Currently Online"
+    elif from_user.status == enums.UserStatus.OFFLINE:
+        time += from_user.last_online_date.strftime("%a, %d %b %Y, %H:%M:%S")
+    return time
+import random
+import os
+import sys
+from hydrogram import Client, filters, enums
+from hydrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ChatJoinRequest
+from hydrogram.errors.exceptions.bad_request_400 import MessageTooLong
+from info import ADMINS, LOG_CHANNEL, PICS, SUPPORT_LINK, UPDATES_LINK
+from database.users_chats_db import db
+from utils import temp, get_settings
+from Script import script
+
+
+@Client.on_chat_member_updated()
+async def welcome(bot, message):
+    if message.chat.type not in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
+        return
+    
+    if message.new_chat_member and not message.old_chat_member:
+        if message.new_chat_member.user.id == temp.ME:
+            buttons = [[
+                InlineKeyboardButton('ᴜᴘᴅᴀᴛᴇ', url=UPDATES_LINK),
+                InlineKeyboardButton('ꜱᴜᴘᴘᴏʀᴛ', url=SUPPORT_LINK)
+            ]]
+            reply_markup=InlineKeyboardMarkup(buttons)
+            user = message.from_user.mention if message.from_user else "Dear"
+            await bot.send_photo(chat_id=message.chat.id, photo=random.choice(PICS), caption=f"👋 Hello {user},\n\nThank you for adding me to the <b>'{message.chat.title}'</b> group, Don't forget to make me admin. If you want to know more ask the support group. 😘</b>", reply_markup=reply_markup)
+            if not await db.get_chat(message.chat.id):
+                total = await bot.get_chat_members_count(message.chat.id)
+                username = f'@{message.chat.username}' if message.chat.username else 'Private'
+                await bot.send_message(LOG_CHANNEL, script.NEW_GROUP_TXT.format(message.chat.title, message.chat.id, username, total))       
+                await db.add_chat(message.chat.id, message.chat.title)
+            return
+        settings = await get_settings(message.chat.id)
+        if settings["welcome"]:
+            WELCOME = settings['welcome_text']
+            welcome_msg = WELCOME.format(
+                mention = message.new_chat_member.user.mention,
+                title = message.chat.title
+            )
+            await bot.send_message(chat_id=message.chat.id, text=welcome_msg)
+
+
+@Client.on_message(filters.command('restart') & filters.user(ADMINS))
+async def restart_bot(bot, message):
+    msg = await message.reply("Restarting...")
+    with open('restart.txt', 'w+') as file:
+        file.write(f"{msg.chat.id}\n{msg.id}")
+    os.execl(sys.executable, sys.executable, "bot.py")
+
+@Client.on_message(filters.command('leave') & filters.user(ADMINS))
+async def leave_a_chat(bot, message):
+    if len(message.command) == 1:
+        return await message.reply('Give me a chat ID')
+    r = message.text.split(None)
+    if len(r) > 2:
+        reason = message.text.split(None, 2)[2]
+        chat = message.text.split(None, 2)[1]
+    else:
+        chat = message.command[1]
+        reason = "No reason provided."
+    try:
+        chat = int(chat)
+    except:
+        chat = chat
+    try:
+        buttons = [[
+            InlineKeyboardButton('Support Group', url=SUPPORT_LINK)
+        ]]
+        reply_markup=InlineKeyboardMarkup(buttons)
+        await bot.send_message(
+            chat_id=chat,
+            text=f'Hello Friends,\nMy owner has told me to leave from group so i go! If you need add me again contact my support group.\nReason - <code>{reason}</code>',
+            reply_markup=reply_markup,
+        )
+        await bot.leave_chat(chat)
+        await message.reply(f"<b>✅️ Successfully bot left from this group - `{chat}`</b>")
+    except Exception as e:
+        await message.reply(f'Error - {e}')
+
+@Client.on_message(filters.command('ban_grp') & filters.user(ADMINS))
+async def disable_chat(bot, message):
+    if len(message.command) == 1:
+        return await message.reply('Give me a chat ID')
+    r = message.text.split(None)
+    if len(r) > 2:
+        reason = message.text.split(None, 2)[2]
+        chat = message.text.split(None, 2)[1]
+    else:
+        chat = message.command[1]
+        reason = "No reason provided."
+    try:
+        chat_ = int(chat)
+    except:
+        return await message.reply('Give me a valid chat ID')
+    cha_t = await db.get_chat(int(chat_))
+    if not cha_t:
+        return await message.reply("Chat not found in database")
+    if cha_t['is_disabled']:
+        return await message.reply(f"This chat is already disabled.\nReason - <code>{cha_t['reason']}</code>")
+    await db.disable_chat(int(chat_), reason)
+    temp.BANNED_CHATS.append(int(chat_))
+    await message.reply('Chat successfully disabled')
+    try:
+        buttons = [[
+            InlineKeyboardButton('Support Group', url=SUPPORT_LINK)
+        ]]
+        reply_markup=InlineKeyboardMarkup(buttons)
+        await bot.send_message(
+            chat_id=chat_, 
+            text=f'Hello Friends,\nMy owner has told me to leave from group so i go! If you need add me again contact my support group.\nReason - <code>{reason}</code>',
+            reply_markup=reply_markup)
+        await bot.leave_chat(chat_)
+    except Exception as e:
+        await message.reply(f"Error - {e}")
+
+@Client.on_message(filters.command('unban_grp') & filters.user(ADMINS))
+async def re_enable_chat(bot, message):
+    if len(message.command) == 1:
+        return await message.reply('Give me a chat ID')
+    chat = message.command[1]
+    try:
+        chat_ = int(chat)
+    except:
+        return await message.reply('Give me a valid chat ID')
+    sts = await db.get_chat(int(chat))
+    if not sts:
+        return await message.reply("Chat not found in database")
+    if not sts.get('is_disabled'):
+        return await message.reply('This chat is not yet disabled.')
+    await db.re_enable_chat(int(chat_))
+    temp.BANNED_CHATS.remove(int(chat_))
+    await message.reply("Chat successfully re-enabled")
+
+@Client.on_message(filters.command('invite_link') & filters.user(ADMINS))
+async def gen_invite_link(bot, message):
+    if len(message.command) == 1:
+        return await message.reply('Give me a chat ID')
+    chat = message.command[1]
+    try:
+        chat = int(chat)
+    except:
+        return await message.reply('Give me a valid chat ID')
+    try:
+        link = await bot.create_chat_invite_link(chat)
+    except Exception as e:
+        return await message.reply(f'Error - {e}')
+    await message.reply(f'Here is your invite link: {link.invite_link}')
+
+@Client.on_message(filters.command('ban_user') & filters.user(ADMINS))
+async def ban_a_user(bot, message):
+    if len(message.command) == 1:
+        return await message.reply('Give me a user ID or Username')
+    r = message.text.split(None)
+    if len(r) > 2:
+        reason = message.text.split(None, 2)[2]
+        chat = message.text.split(None, 2)[1]
+    else:
+        chat = message.command[1]
+        reason = "No reason provided."
+    try:
+        chat = int(chat)
+    except:
+        pass
+    try:
+        k = await bot.get_users(chat)
+    except Exception as e:
+        return await message.reply(f'Error - {e}')
+    else:
+        if k.id in ADMINS:
+            return await message.reply('You ADMINS')
+        jar = await db.get_ban_status(k.id)
+        if jar['is_banned']:
+            return await message.reply(f"{k.mention} is already banned.\nReason - <code>{jar['ban_reason']}</code>")
+        await db.ban_user(k.id, reason)
+        temp.BANNED_USERS.append(k.id)
+        await message.reply(f"Successfully banned {k.mention}")
+   
+@Client.on_message(filters.command('unban_user') & filters.user(ADMINS))
+async def unban_a_user(bot, message):
+    if len(message.command) == 1:
+        return await message.reply('Give me a user ID or Username')
+    r = message.text.split(None)
+    if len(r) > 2:
+        chat = message.text.split(None, 2)[1]
+    else:
+        chat = message.command[1]
+    try:
+        chat = int(chat)
+    except:
+        pass
+    try:
+        k = await bot.get_users(chat)
+    except Exception as e:
+        return await message.reply(f'Error - {e}')
+    else:
+        jar = await db.get_ban_status(k.id)
+        if not jar['is_banned']:
+            return await message.reply(f"{k.mention} is not yet banned.")
+        await db.remove_ban(k.id)
+        temp.BANNED_USERS.remove(k.id)
+        await message.reply(f"Successfully unbanned {k.mention}")
+    
+@Client.on_message(filters.command('users') & filters.user(ADMINS))
+async def list_users(bot, message):
+    raju = await message.reply('Getting list of users')
+    users = await db.get_all_users()
+    out = "Users saved in database are:\n\n"
+    for user in users:
+        out += f"**Name:** {user['name']}\n**ID:** `{user['id']}`"
+        if user['ban_status']['is_banned']:
+            out += ' (Banned User)'
+        if user['verify_status']['is_verified']:
+            out += ' (Verified User)'
+        out += '\n\n'
+    try:
+        await raju.edit_text(out)
+    except MessageTooLong:
+        with open('users.txt', 'w+') as outfile:
+            outfile.write(out)
+        await message.reply_document('users.txt', caption="List of users")
+        await raju.delete()
+        os.remove('users.txt')
+
+@Client.on_message(filters.command('chats') & filters.user(ADMINS))
+async def list_chats(bot, message):
+    raju = await message.reply('Getting list of chats')
+    chats = await db.get_all_chats()
+    out = "Chats saved in database are:\n\n"
+    for chat in chats:
+        out += f"**Title:** {chat['title']}\n**ID:** `{chat['id']}`"
+        if chat['chat_status']['is_disabled']:
+            out += ' (Disabled Chat)'
+        out += '\n\n'
+    try:
+        await raju.edit_text(out)
+    except MessageTooLong:
+        with open('chats.txt', 'w+') as outfile:
+            outfile.write(out)
+        await message.reply_document('chats.txt', caption="List of chats")
+        await raju.delete()
+        os.remove('chats.txt')
+
+
+@Client.on_chat_join_request()
+async def join_reqs(client, message: ChatJoinRequest):
+    stg = db.get_bot_sttgs()
+    if message.chat.id == int(stg.get('REQUEST_FORCE_SUB_CHANNELS')):
+        if not db.find_join_req(message.from_user.id):
+            db.add_join_req(message.from_user.id)
+
+import asyncio
+import re
+from time import time as time_now
+import math, os
+import qrcode, random
+from hydrogram.errors import ListenerTimeout
+from hydrogram.errors.exceptions.bad_request_400 import MediaEmpty, PhotoInvalidDimensions, WebpageMediaEmpty
+from Script import script
+from datetime import datetime, timedelta
+from info import IS_PREMIUM, PICS, TUTORIAL, SHORTLINK_API, SHORTLINK_URL, RECEIPT_SEND_USERNAME, UPI_ID, UPI_NAME, PRE_DAY_AMOUNT, SECOND_FILES_DATABASE_URL, ADMINS, URL, MAX_BTN, BIN_CHANNEL, IS_STREAM, DELETE_TIME, FILMS_LINK, LOG_CHANNEL, SUPPORT_GROUP, SUPPORT_LINK, UPDATES_LINK, LANGUAGES, QUALITY
+from hydrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, InputMediaPhoto
+from hydrogram import Client, filters, enums
+from utils import is_premium, get_size, is_subscribed, is_check_admin, get_wish, get_shortlink, get_readable_time, get_poster, temp, get_settings, save_group_settings
+from database.users_chats_db import db
+from database.ia_filterdb import get_search_results,delete_files, db_count_documents, second_db_count_documents
+from plugins.commands import get_grp_stg
+
+BUTTONS = {}
+CAP = {}
+
+@Client.on_message(filters.private & filters.text & filters.incoming)
+async def pm_search(client, message):
+    if message.text.startswith("/"):
+        return
+    stg = db.get_bot_sttgs()
+    if not stg.get('PM_SEARCH'):
+        return await message.reply_text('PM search was disabled!')
+    if await is_premium(message.from_user.id, client):
+        if not stg.get('AUTO_FILTER'):
+            return await message.reply_text('Auto filter was disabled!')
+        s = await message.reply(f"<b><i>⚠️ `{message.text}` searching...</i></b>", quote=True)
+        await auto_filter(client, message, s)
+    else:
+        files, n_offset, total = await get_search_results(message.text)
+        btn = [[
+            InlineKeyboardButton("🗂 ᴄʟɪᴄᴋ ʜᴇʀᴇ 🗂", url=FILMS_LINK)
+        ],[
+            InlineKeyboardButton('🤑 Buy Premium', url=f"https://t.me/{temp.U_NAME}?start=premium")
+            ]]
+        reply_markup=InlineKeyboardMarkup(btn)
+        if int(total) != 0:
+            await message.reply_text(f'<b><i>🤗 ᴛᴏᴛᴀʟ <code>{total}</code> ʀᴇꜱᴜʟᴛꜱ ꜰᴏᴜɴᴅ ɪɴ ᴛʜɪꜱ ɢʀᴏᴜᴘ 👇</i></b>\n\nor buy premium subscription', reply_markup=reply_markup)
+
+            
+
+@Client.on_message(filters.group & filters.text & filters.incoming)
+async def group_search(client, message):
+    chat_id = message.chat.id
+    user_id = message.from_user.id if message and message.from_user else 0
+    stg = db.get_bot_sttgs()
+    if stg.get('AUTO_FILTER'):
+        if not user_id:
+            await message.reply("I'm not working for anonymous admin!")
+            return
+        if message.chat.id == SUPPORT_GROUP:
+            files, offset, total = await get_search_results(message.text)
+            if files:
+                btn = [[
+                    InlineKeyboardButton("Here", url=FILMS_LINK)
+                ]]
+                await message.reply_text(f'Total {total} results found in this group', reply_markup=InlineKeyboardMarkup(btn))
+            return
+            
+        if message.text.startswith("/"):
+            return
+            
+        elif '@admin' in message.text.lower() or '@admins' in message.text.lower():
+            if await is_check_admin(client, message.chat.id, message.from_user.id):
+                return
+            admins = []
+            async for member in client.get_chat_members(chat_id=message.chat.id, filter=enums.ChatMembersFilter.ADMINISTRATORS):
+                if not member.user.is_bot:
+                    admins.append(member.user.id)
+                    if member.status == enums.ChatMemberStatus.OWNER:
+                        if message.reply_to_message:
+                            try:
+                                sent_msg = await message.reply_to_message.forward(member.user.id)
+                                await sent_msg.reply_text(f"#Attention\n★ User: {message.from_user.mention}\n★ Group: {message.chat.title}\n\n★ <a href={message.reply_to_message.link}>Go to message</a>", disable_web_page_preview=True)
+                            except:
+                                pass
+                        else:
+                            try:
+                                sent_msg = await message.forward(member.user.id)
+                                await sent_msg.reply_text(f"#Attention\n★ User: {message.from_user.mention}\n★ Group: {message.chat.title}\n\n★ <a href={message.link}>Go to message</a>", disable_web_page_preview=True)
+                            except:
+                                pass
+            hidden_mentions = (f'[\u2064](tg://user?id={user_id})' for user_id in admins)
+            await message.reply_text('Report sent!' + ''.join(hidden_mentions))
+            return
+
+        elif re.findall(r'https?://\S+|www\.\S+|t\.me/\S+|@\w+', message.text):
+            if await is_check_admin(client, message.chat.id, message.from_user.id):
+                return
+            await message.delete()
+            return await message.reply('Links not allowed here!')
+        
+        elif '#request' in message.text.lower():
+            if message.from_user.id in ADMINS:
+                return
+            await client.send_message(LOG_CHANNEL, f"#Request\n★ User: {message.from_user.mention}\n★ Group: {message.chat.title}\n\n★ Message: {re.sub(r'#request', '', message.text.lower())}")
+            await message.reply_text("Request sent!")
+            return  
+        else:
+            s = await message.reply(f"<b><i>⚠️ `{message.text}` searching...</i></b>")
+            await auto_filter(client, message, s)
+    else:
+        k = await message.reply_text('Auto Filter Off! ❌')
+        await asyncio.sleep(5)
+        await k.delete()
+        try:
+            await message.delete()
+        except:
+            pass
+
+@Client.on_callback_query(filters.regex(r"^next"))
+async def next_page(bot, query):
+    ident, req, key, offset = query.data.split("_")
+    if int(req) not in [query.from_user.id, 0]:
+        return await query.answer(f"Hello {query.from_user.first_name},\nDon't Click Other Results!", show_alert=True)
+    try:
+        offset = int(offset)
+    except:
+        offset = 0
+    search = BUTTONS.get(key)
+    cap = CAP.get(key)
+    if not search:
+        await query.answer(f"Hello {query.from_user.first_name},\nSend New Request Again!", show_alert=True)
+        return
+
+    files, n_offset, total = await get_search_results(search, offset=offset)
+    try:
+        n_offset = int(n_offset)
+    except:
+        n_offset = 0
+
+    if not files:
+        return
+    temp.FILES[key] = files
+    settings = await get_settings(query.message.chat.id)
+    del_msg = f"\n\n<b>⚠️ ᴛʜɪs ᴍᴇssᴀɢᴇ ᴡɪʟʟ ʙᴇ ᴀᴜᴛᴏ ᴅᴇʟᴇᴛᴇ ᴀꜰᴛᴇʀ <code>{get_readable_time(DELETE_TIME)}</code> ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛ ɪssᴜᴇs</b>" if settings["auto_delete"] else ''
+    files_link = ''
+
+    if settings['links']:
+        btn = []
+        for file_num, file in enumerate(files, start=offset+1):
+            files_link += f"""<b>\n\n{file_num}. <a href=https://t.me/{temp.U_NAME}?start=file_{query.message.chat.id}_{file['_id']}>[{get_size(file['file_size'])}] {file['file_name']}</a></b>"""
+    else:
+        btn = [[
+            InlineKeyboardButton(text=f"{get_size(file['file_size'])} - {file['file_name']}", callback_data=f"file#{file['_id']}")
+        ]
+            for file in files
+        ]
+    if settings['shortlink'] and not await is_premium(query.from_user.id, bot):
+        btn.insert(0,
+            [InlineKeyboardButton("📰 ʟᴀɴɢᴜᴀɢᴇs", callback_data=f"languages#{key}#{req}#{offset}"),
+            InlineKeyboardButton("🔍 ǫᴜᴀʟɪᴛʏ", callback_data=f"quality#{key}#{req}#{offset}")]
+        )
+        btn.insert(1,
+            [InlineKeyboardButton("♻️ sᴇɴᴅ ᴀʟʟ ♻️", url=await get_shortlink(settings['url'], settings['api'], f'https://t.me/{temp.U_NAME}?start=all_{query.message.chat.id}_{key}'))]
+        )
+    else:
+        btn.insert(0,
+            [InlineKeyboardButton("📰 ʟᴀɴɢᴜᴀɢᴇs", callback_data=f"languages#{key}#{req}#{offset}"),
+            InlineKeyboardButton("🔍 ǫᴜᴀʟɪᴛʏ", callback_data=f"quality#{key}#{req}#{offset}")]
+        )
+        btn.insert(1,
+            [InlineKeyboardButton("♻️ sᴇɴᴅ ᴀʟʟ", callback_data=f"send_all#{key}#{req}")]
+        )
+
+    if 0 < offset <= MAX_BTN:
+        off_set = 0
+    elif offset == 0:
+        off_set = None
+    else:
+        off_set = offset - MAX_BTN
+        
+    if n_offset == 0:
+        btn.append(
+            [InlineKeyboardButton("« ʙᴀᴄᴋ", callback_data=f"next_{req}_{key}_{off_set}"),
+             InlineKeyboardButton(f"{math.ceil(int(offset) / MAX_BTN) + 1}/{math.ceil(total / MAX_BTN)}", callback_data="buttons")]
+        )
+    elif off_set is None:
+        btn.append(
+            [InlineKeyboardButton(f"{math.ceil(int(offset) / MAX_BTN) + 1}/{math.ceil(total / MAX_BTN)}", callback_data="buttons"),
+             InlineKeyboardButton("ɴᴇxᴛ »", callback_data=f"next_{req}_{key}_{n_offset}")])
+    else:
+        btn.append(
+            [
+                InlineKeyboardButton("« ʙᴀᴄᴋ", callback_data=f"next_{req}_{key}_{off_set}"),
+                InlineKeyboardButton(f"{math.ceil(int(offset) / MAX_BTN) + 1}/{math.ceil(total / MAX_BTN)}", callback_data="buttons"),
+                InlineKeyboardButton("ɴᴇxᴛ »", callback_data=f"next_{req}_{key}_{n_offset}")
+            ]
+        )
+    btn.append(
+        [InlineKeyboardButton('🤑 Buy Premium', url=f"https://t.me/{temp.U_NAME}?start=premium")]
+    )
+    await query.message.edit_text(cap + files_link + del_msg, reply_markup=InlineKeyboardMarkup(btn), disable_web_page_preview=True, parse_mode=enums.ParseMode.HTML)
+
+@Client.on_callback_query(filters.regex(r"^languages"))
+async def languages_(client: Client, query: CallbackQuery):
+    _, key, req, offset = query.data.split("#")
+    if int(req) != query.from_user.id:
+        return await query.answer(f"Hello {query.from_user.first_name},\nDon't Click Other Results!", show_alert=True)
+    btn = [
+        [InlineKeyboardButton(text=LANGUAGES[i].title(), callback_data=f"lang_search#{LANGUAGES[i]}#{key}#{offset}#{req}"),
+         InlineKeyboardButton(text=LANGUAGES[i+1].title(), callback_data=f"lang_search#{LANGUAGES[i+1]}#{key}#{offset}#{req}")]
+        for i in range(0, len(LANGUAGES)-1, 2)
+    ]
+    btn.append([InlineKeyboardButton(text="⪻ ʙᴀᴄᴋ ᴛᴏ ᴍᴀɪɴ ᴘᴀɢᴇ", callback_data=f"next_{req}_{key}_{offset}")])  
+    await query.message.edit_text("<b>ɪɴ ᴡʜɪᴄʜ ʟᴀɴɢᴜᴀɢᴇ ᴅᴏ ʏᴏᴜ ᴡᴀɴᴛ, sᴇʟᴇᴄᴛ ʜᴇʀᴇ 👇</b>", disable_web_page_preview=True, reply_markup=InlineKeyboardMarkup(btn))
+
+@Client.on_callback_query(filters.regex(r"^quality"))
+async def quality(client: Client, query: CallbackQuery):
+    _, key, req, offset = query.data.split("#")
+    if int(req) != query.from_user.id:
+        return await query.answer(f"Hello {query.from_user.first_name},\nDon't Click Other Results!", show_alert=True)
+    btn = [
+        [InlineKeyboardButton(text=QUALITY[i].title(), callback_data=f"qual_search#{QUALITY[i]}#{key}#{offset}#{req}"),
+         InlineKeyboardButton(text=QUALITY[i+1].title(), callback_data=f"qual_search#{QUALITY[i+1]}#{key}#{offset}#{req}")]
+        for i in range(0, len(QUALITY)-1, 2)
+    ]
+    btn.append([InlineKeyboardButton(text="⪻ ʙᴀᴄᴋ ᴛᴏ ᴍᴀɪɴ ᴘᴀɢᴇ", callback_data=f"next_{req}_{key}_{offset}")])  
+    await query.message.edit_text("<b>ɪɴ ᴡʜɪᴄʜ ǫᴜᴀʟɪᴛʏ ᴅᴏ ʏᴏᴜ ᴡᴀɴᴛ, sᴇʟᴇᴄᴛ ʜᴇʀᴇ 👇</b>", disable_web_page_preview=True, reply_markup=InlineKeyboardMarkup(btn))
+
+@Client.on_callback_query(filters.regex(r"^lang_search"))
+async def filter_languages_cb_handler(client: Client, query: CallbackQuery):
+    _, lang, key, offset, req = query.data.split("#")
+    if int(req) != query.from_user.id:
+        return await query.answer(f"Hello {query.from_user.first_name},\nDon't Click Other Results!", show_alert=True)
+
+    search = BUTTONS.get(key)
+    cap = CAP.get(key)
+    if not search:
+        await query.answer(f"Hello {query.from_user.first_name},\nSend New Request Again!", show_alert=True)
+        return 
+
+    files, l_offset, total_results = await get_search_results(search, lang=lang)
+    if not files:
+        await query.answer(f"sᴏʀʀʏ '{lang.title()}' ʟᴀɴɢᴜᴀɢᴇ ꜰɪʟᴇs ɴᴏᴛ ꜰᴏᴜɴᴅ 😕", show_alert=1)
+        return
+    temp.FILES[key] = files
+    settings = await get_settings(query.message.chat.id)
+    del_msg = f"\n\n<b>⚠️ ᴛʜɪs ᴍᴇssᴀɢᴇ ᴡɪʟʟ ʙᴇ ᴀᴜᴛᴏ ᴅᴇʟᴇᴛᴇ ᴀꜰᴛᴇʀ <code>{get_readable_time(DELETE_TIME)}</code> ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛ ɪssᴜᴇs</b>" if settings["auto_delete"] else ''
+    files_link = ''
+
+    if settings['links']:
+        btn = []
+        for file_num, file in enumerate(files, start=1):
+            files_link += f"""<b>\n\n{file_num}. <a href=https://t.me/{temp.U_NAME}?start=file_{query.message.chat.id}_{file['_id']}>[{get_size(file['file_size'])}] {file['file_name']}</a></b>"""
+    else:
+        btn = [[
+            InlineKeyboardButton(text=f"{get_size(file['file_size'])} - {file['file_name']}", callback_data=f"file#{file['_id']}")
+        ]
+            for file in files
+        ]
+    if settings['shortlink'] and not await is_premium(query.from_user.id, client):
+        btn.insert(1,
+            [InlineKeyboardButton("♻️ sᴇɴᴅ ᴀʟʟ ♻️", url=await get_shortlink(settings['url'], settings['api'], f'https://t.me/{temp.U_NAME}?start=all_{query.message.chat.id}_{key}')),
+            InlineKeyboardButton("🔍 ǫᴜᴀʟɪᴛʏ", callback_data=f"quality#{key}#{req}#{offset}")]
+        )
+    else:
+        btn.insert(1,
+            [InlineKeyboardButton("♻️ sᴇɴᴅ ᴀʟʟ ♻️", callback_data=f"send_all#{key}#{req}"),
+            InlineKeyboardButton("🔍 ǫᴜᴀʟɪᴛʏ", callback_data=f"quality#{key}#{req}#{offset}")]
+        )
+    
+    if l_offset != "":
+        btn.append(
+            [InlineKeyboardButton(text=f"1/{math.ceil(int(total_results) / MAX_BTN)}", callback_data="buttons"),
+             InlineKeyboardButton(text="ɴᴇxᴛ »", callback_data=f"lang_next#{req}#{key}#{lang}#{l_offset}#{offset}")]
+        )
+    btn.append([InlineKeyboardButton(text="⪻ ʙᴀᴄᴋ ᴛᴏ ᴍᴀɪɴ ᴘᴀɢᴇ", callback_data=f"next_{req}_{key}_{offset}")])
+    await query.message.edit_text(cap + files_link + del_msg, disable_web_page_preview=True, reply_markup=InlineKeyboardMarkup(btn), parse_mode=enums.ParseMode.HTML)
+
+@Client.on_callback_query(filters.regex(r"^lang_next"))
+async def lang_next_page(bot, query):
+    ident, req, key, lang, l_offset, offset = query.data.split("#")
+    if int(req) != query.from_user.id:
+        return await query.answer(f"Hello {query.from_user.first_name},\nDon't Click Other Results!", show_alert=True)
+    try:
+        l_offset = int(l_offset)
+    except:
+        l_offset = 0
+    search = BUTTONS.get(key)
+    cap = CAP.get(key)
+    settings = await get_settings(query.message.chat.id)
+    del_msg = f"\n\n<b>⚠️ ᴛʜɪs ᴍᴇssᴀɢᴇ ᴡɪʟʟ ʙᴇ ᴀᴜᴛᴏ ᴅᴇʟᴇᴛᴇ ᴀꜰᴛᴇʀ <code>{get_readable_time(DELETE_TIME)}</code> ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛ ɪssᴜᴇs</b>" if settings["auto_delete"] else ''
+    if not search:
+        await query.answer(f"Hello {query.from_user.first_name},\nSend New Request Again!", show_alert=True)
+        return
+    files, n_offset, total = await get_search_results(search, offset=l_offset, lang=lang)
+    if not files:
+        return
+    temp.FILES[key] = files
+    try:
+        n_offset = int(n_offset)
+    except:
+        n_offset = 0
+    files_link = ''
+    if settings['links']:
+        btn = []
+        for file_num, file in enumerate(files, start=l_offset+1):
+            files_link += f"""<b>\n\n{file_num}. <a href=https://t.me/{temp.U_NAME}?start=file_{query.message.chat.id}_{file['_id']}>[{get_size(file['file_size'])}] {file['file_name']}</a></b>"""
+    else:
+        btn = [[
+            InlineKeyboardButton(text=f"{get_size(file['file_size'])} - {file['file_name']}", callback_data=f'file#{file["_id"]}')
+        ]
+            for file in files
+        ]
+    if settings['shortlink'] and not await is_premium(query.from_user.id, bot):
+        btn.insert(1,
+            [InlineKeyboardButton("♻️ sᴇɴᴅ ᴀʟʟ ♻️", url=await get_shortlink(settings['url'], settings['api'], f'https://t.me/{temp.U_NAME}?start=all_{query.message.chat.id}_{key}')),
+            InlineKeyboardButton("🔍 ǫᴜᴀʟɪᴛʏ", callback_data=f"quality#{key}#{req}#{l_offset}")]
+        )
+    else:
+        btn.insert(1,
+            [InlineKeyboardButton("♻️ sᴇɴᴅ ᴀʟʟ ♻️", callback_data=f"send_all#{key}#{req}"),
+            InlineKeyboardButton("🔍 ǫᴜᴀʟɪᴛʏ", callback_data=f"quality#{key}#{req}#{l_offset}")]
+        )
+    if 0 < l_offset <= MAX_BTN:
+        b_offset = 0
+    elif l_offset == 0:
+        b_offset = None
+    else:
+        b_offset = l_offset - MAX_BTN
+    if n_offset == 0:
+        btn.append(
+            [InlineKeyboardButton("« ʙᴀᴄᴋ", callback_data=f"lang_next#{req}#{key}#{lang}#{b_offset}#{offset}"),
+             InlineKeyboardButton(f"{math.ceil(int(l_offset) / MAX_BTN) + 1}/{math.ceil(total / MAX_BTN)}", callback_data="buttons")]
+        )
+    elif b_offset is None:
+        btn.append(
+            [InlineKeyboardButton(f"{math.ceil(int(l_offset) / MAX_BTN) + 1}/{math.ceil(total / MAX_BTN)}", callback_data="buttons"),
+             InlineKeyboardButton("ɴᴇxᴛ »", callback_data=f"lang_next#{req}#{key}#{lang}#{n_offset}#{offset}")]
+        )
+    else:
+        btn.append(
+            [InlineKeyboardButton("« ʙᴀᴄᴋ", callback_data=f"lang_next#{req}#{key}#{lang}#{b_offset}#{offset}"),
+             InlineKeyboardButton(f"{math.ceil(int(l_offset) / MAX_BTN) + 1}/{math.ceil(total / MAX_BTN)}", callback_data="buttons"),
+             InlineKeyboardButton("ɴᴇxᴛ »", callback_data=f"lang_next#{req}#{key}#{lang}#{n_offset}#{offset}")]
+        )
+    btn.append([InlineKeyboardButton(text="⪻ ʙᴀᴄᴋ ᴛᴏ ᴍᴀɪɴ ᴘᴀɢᴇ", callback_data=f"next_{req}_{key}_{offset}")])
+    await query.message.edit_text(cap + files_link + del_msg, reply_markup=InlineKeyboardMarkup(btn), disable_web_page_preview=True, parse_mode=enums.ParseMode.HTML)
+
+@Client.on_callback_query(filters.regex(r"^qual_search"))
+async def quality_search(client: Client, query: CallbackQuery):
+    _, qual, key, offset, req = query.data.split("#")
+    if int(req) != query.from_user.id:
+        return await query.answer(f"Hello {query.from_user.first_name},\nDon't Click Other Results!", show_alert=True)
+    search = BUTTONS.get(key)
+    cap = CAP.get(key)
+    if not search:
+        await query.answer(f"Hello {query.from_user.first_name},\nSend New Request Again!", show_alert=True)
+        return
+    files, l_offset, total_results = await get_search_results(search, lang=qual)
+    if not files:
+        await query.answer(f"sᴏʀʀʏ '{qual.title()}' ʟᴀɴɢᴜᴀɢᴇ ꜰɪʟᴇs ɴᴏᴛ ꜰᴏᴜɴᴅ 😕", show_alert=1)
+        return
+    temp.FILES[key] = files
+    settings = await get_settings(query.message.chat.id)
+    del_msg = f"\n\n<b>⚠️ ᴛʜɪs ᴍᴇssᴀɢᴇ ᴡɪʟʟ ʙᴇ ᴀᴜᴛᴏ ᴅᴇʟᴇᴛᴇ ᴀꜰᴛᴇʀ <code>{get_readable_time(DELETE_TIME)}</code> ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛ ɪssᴜᴇs</b>" if settings["auto_delete"] else ''
+    files_link = ''
+    if settings['links']:
+        btn = []
+        for file_num, file in enumerate(files, start=1):
+            files_link += f"""<b>\n\n{file_num}. <a href=https://t.me/{temp.U_NAME}?start=file_{query.message.chat.id}_{file['_id']}>[{get_size(file['file_size'])}] {file['file_name']}</a></b>"""
+    else:
+        btn = [[
+            InlineKeyboardButton(text=f"{get_size(file['file_size'])} - {file['file_name']}", callback_data=f'file#{file["_id"]}')
+        ]
+            for file in files
+        ]
+    if settings['shortlink'] and not await is_premium(query.from_user.id, client):
+        btn.insert(0,
+            [InlineKeyboardButton("♻️ sᴇɴᴅ ᴀʟʟ ♻️", url=await get_shortlink(settings['url'], settings['api'], f'https://t.me/{temp.U_NAME}?start=all_{query.message.chat.id}_{key}'))]
+        )
+    else:
+        btn.insert(0,
+            [InlineKeyboardButton("♻️ sᴇɴᴅ ᴀʟʟ ♻️", callback_data=f"send_all#{key}#{req}")]
+        )  
+    if l_offset != "":
+        btn.append(
+            [InlineKeyboardButton(text=f"1/{math.ceil(int(total_results) / MAX_BTN)}", callback_data="buttons"),
+             InlineKeyboardButton(text="ɴᴇxᴛ »", callback_data=f"qual_next#{req}#{key}#{qual}#{l_offset}#{offset}")]
+        )
+    btn.append([InlineKeyboardButton(text="⪻ ʙᴀᴄᴋ ᴛᴏ ᴍᴀɪɴ ᴘᴀɢᴇ", callback_data=f"next_{req}_{key}_{offset}")])
+    await query.message.edit_text(cap + files_link + del_msg, disable_web_page_preview=True, reply_markup=InlineKeyboardMarkup(btn), parse_mode=enums.ParseMode.HTML)
+
+@Client.on_callback_query(filters.regex(r"^qual_next"))
+async def quality_next_page(bot, query):
+    ident, req, key, qual, l_offset, offset = query.data.split("#")
+    if int(req) != query.from_user.id:
+        return await query.answer(f"Hello {query.from_user.first_name},\nDon't Click Other Results!", show_alert=True)
+    try:
+        l_offset = int(l_offset)
+    except:
+        l_offset = 0
+    search = BUTTONS.get(key)
+    cap = CAP.get(key)
+    settings = await get_settings(query.message.chat.id)
+    del_msg = f"\n\n<b>⚠️ ᴛʜɪs ᴍᴇssᴀɢᴇ ᴡɪʟʟ ʙᴇ ᴀᴜᴛᴏ ᴅᴇʟᴇᴛᴇ ᴀꜰᴛᴇʀ <code>{get_readable_time(DELETE_TIME)}</code> ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛ ɪssᴜᴇs</b>" if settings["auto_delete"] else ''
+    if not search:
+        await query.answer(f"Hello {query.from_user.first_name},\nSend New Request Again!", show_alert=True)
+        return
+    files, n_offset, total = await get_search_results(search, offset=l_offset, lang=qual)
+    if not files:
+        return
+    temp.FILES[key] = files
+    try:
+        n_offset = int(n_offset)
+    except:
+        n_offset = 0
+    files_link = ''
+    if settings['links']:
+        btn = []
+        for file_num, file in enumerate(files, start=l_offset+1):
+            files_link += f"""<b>\n\n{file_num}. <a href=https://t.me/{temp.U_NAME}?start=file_{query.message.chat.id}_{file['_id']}>[{get_size(file['file_size'])}] {file['file_name']}</a></b>"""
+    else:
+        btn = [[
+            InlineKeyboardButton(text=f"{get_size(file['file_size'])} - {file['file_name']}", callback_data=f'file#{file["_id"]}')
+        ]
+            for file in files
+        ]
+    if settings['shortlink'] and not await is_premium(query.from_user.id, bot):
+        btn.insert(0,
+            [InlineKeyboardButton("♻️ sᴇɴᴅ ᴀʟʟ ♻️", url=await get_shortlink(settings['url'], settings['api'], f'https://t.me/{temp.U_NAME}?start=all_{query.message.chat.id}_{key}'))]
+        )
+    else:
+        btn.insert(0,
+            [InlineKeyboardButton("♻️ sᴇɴᴅ ᴀʟʟ ♻️", callback_data=f"send_all#{key}#{req}")]
+        )
+    if 0 < l_offset <= MAX_BTN:
+        b_offset = 0
+    elif l_offset == 0:
+        b_offset = None
+    else:
+        b_offset = l_offset - MAX_BTN
+    if n_offset == 0:
+        btn.append(
+            [InlineKeyboardButton("« ʙᴀᴄᴋ", callback_data=f"qual_next#{req}#{key}#{qual}#{b_offset}#{offset}"),
+             InlineKeyboardButton(f"{math.ceil(int(l_offset) / MAX_BTN) + 1}/{math.ceil(total / MAX_BTN)}", callback_data="buttons")]
+        )
+    elif b_offset is None:
+        btn.append(
+            [InlineKeyboardButton(f"{math.ceil(int(l_offset) / MAX_BTN) + 1}/{math.ceil(total / MAX_BTN)}", callback_data="buttons"),
+             InlineKeyboardButton("ɴᴇxᴛ »", callback_data=f"qual_next#{req}#{key}#{qual}#{n_offset}#{offset}")]
+        )
+    else:
+        btn.append(
+            [InlineKeyboardButton("« ʙᴀᴄᴋ", callback_data=f"qual_next#{req}#{key}#{qual}#{b_offset}#{offset}"),
+             InlineKeyboardButton(f"{math.ceil(int(l_offset) / MAX_BTN) + 1}/{math.ceil(total / MAX_BTN)}", callback_data="buttons"),
+             InlineKeyboardButton("ɴᴇxᴛ »", callback_data=f"qual_next#{req}#{key}#{qual}#{n_offset}#{offset}")]
+        )
+    btn.append([InlineKeyboardButton(text="⪻ ʙᴀᴄᴋ ᴛᴏ ᴍᴀɪɴ ᴘᴀɢᴇ", callback_data=f"next_{req}_{key}_{offset}")])
+    await query.message.edit_text(cap + files_link + del_msg, reply_markup=InlineKeyboardMarkup(btn), disable_web_page_preview=True, parse_mode=enums.ParseMode.HTML)
+
+@Client.on_callback_query(filters.regex(r"^spolling"))
+async def advantage_spoll_choker(bot, query):
+    _, id, user = query.data.split('#')
+    if int(user) != 0 and query.from_user.id != int(user):
+        return await query.answer(f"Hello {query.from_user.first_name},\nDon't Click Other Results!", show_alert=True)
+    movie = await get_poster(id, id=True)
+    search = movie.get('title')
+    s = await query.message.edit_text(f"<b><i><code>{search}</code> Check In My Database...</i></b>")
+    await query.answer('')
+    files, offset, total_results = await get_search_results(search)
+    if files:
+        k = (search, files, offset, total_results)
+        await auto_filter(bot, query, s, k)
+    else:
+        k = await query.message.edit(f"👋 Hello {query.from_user.mention},\n\nI don't find <b>'{search}'</b> in my database. 😔")
+        await bot.send_message(LOG_CHANNEL, f"#No_Result\n\nRequester: {query.from_user.mention}\nContent: {search}")
+        await asyncio.sleep(60)
+        await k.delete()
+        try:
+            await query.message.reply_to_message.delete()
+        except:
+            pass
+
+@Client.on_callback_query()
+async def cb_handler(client: Client, query: CallbackQuery):
+    if query.data == "close_data":
+        try:
+            user = query.message.reply_to_message.from_user.id
+        except:
+            user = query.from_user.id
+        if int(user) != 0 and query.from_user.id != int(user):
+            return await query.answer(f"Hello {query.from_user.first_name},\nThis Is Not For You!", show_alert=True)
+        await query.answer("Closed!")
+        await query.message.delete()
+        try:
+            await query.message.reply_to_message.delete()
+        except:
+            pass
+  
+    if query.data.startswith("file"):
+        ident, file_id = query.data.split("#")
+        try:
+            user = query.message.reply_to_message.from_user.id
+        except:
+            user = query.message.from_user.id
+        if int(user) != 0 and query.from_user.id != int(user):
+            return await query.answer(f"Hello {query.from_user.first_name},\nDon't Click Other Results!", show_alert=True)
+        await query.answer(url=f"https://t.me/{temp.U_NAME}?start=file_{query.message.chat.id}_{file_id}")
+
+    elif query.data.startswith("get_del_file"):
+        ident, group_id, file_id = query.data.split("#")
+        if not await is_premium(query.from_user.id, client):
+            return await query.answer(f"Only for premium users, use /plan for details", show_alert=True)
+        await query.answer(url=f"https://t.me/{temp.U_NAME}?start=file_{group_id}_{file_id}")
+        await query.message.delete()
+
+    elif query.data.startswith("get_del_send_all_files"):
+        ident, group_id, key = query.data.split("#")
+        if not await is_premium(query.from_user.id, client):
+            return await query.answer(f"Only for premium users, use /plan for details", show_alert=True)
+        await query.answer(url=f"https://t.me/{temp.U_NAME}?start=all_{group_id}_{key}")
+        await query.message.delete()
+        
+    elif query.data.startswith("stream"):
+        file_id = query.data.split('#', 1)[1]
+        if not await is_premium(query.from_user.id, client):
+            return await query.answer(f"Only for premium users, use /plan for details", show_alert=True)
+        msg = await client.send_cached_media(chat_id=BIN_CHANNEL, file_id=file_id)
+        watch = f"{URL}watch/{msg.id}"
+        download = f"{URL}download/{msg.id}"
+        btn=[[
+            InlineKeyboardButton("ᴡᴀᴛᴄʜ ᴏɴʟɪɴᴇ", url=watch),
+            InlineKeyboardButton("ꜰᴀsᴛ ᴅᴏᴡɴʟᴏᴀᴅ", url=download)
+        ],[
+            InlineKeyboardButton('❌ ᴄʟᴏsᴇ ❌', callback_data='close_data')
+        ]]
+        reply_markup=InlineKeyboardMarkup(btn)
+        await query.edit_message_reply_markup(
+            reply_markup=reply_markup
+        )
+    
+            
+    elif query.data.startswith("checksub"):
+        ident, mc = query.data.split("#")
+        settings = await get_settings(int(mc.split("_", 2)[1]))
+        btn = await is_subscribed(client, query)
+        if btn:
+            await query.answer(f"Hello {query.from_user.first_name},\nPlease join my updates channel and try again.", show_alert=True)
+            btn.append(
+                [InlineKeyboardButton("🔁 Try Again 🔁", callback_data=f"checksub#{mc}")]
+            )
+            await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(btn))
+            return
+        await query.answer(url=f"https://t.me/{temp.U_NAME}?start={mc}")
+        await query.message.delete()
+
+    elif query.data == "buttons":
+        await query.answer()
+
+    elif query.data == "instructions":
+        await query.answer("Movie request format.\nExample:\nBlack Adam or Black Adam 2022\n\nTV Reries request format.\nExample:\nLoki S01E01 or Loki S01 E01\n\nDon't use symbols.", show_alert=True)
+
+    elif query.data == 'activate_trial':
+        mp = db.get_plan(query.from_user.id)
+        if mp['trial']:
+            return await query.message.edit('You already used trial, use /plan to activate plan')
+        ex = datetime.now() + timedelta(hours=1)
+        mp['expire'] = ex
+        mp['trial'] = True
+        mp['plan'] = '1 hour'
+        mp['premium'] = True
+        db.update_plan(query.from_user.id, mp)
+        await query.message.edit(f"Congratulations! Your activated trial for 1 hour\nExpire: {ex.strftime('%Y.%m.%d %H:%M:%S')}")
+
+    elif query.data == 'activate_plan':
+        q = await query.message.edit('How many days you need premium plan?\nSend days as number')
+        msg = await client.listen(chat_id=query.message.chat.id, user_id=query.from_user.id)
+        try:
+            d = int(msg.text)
+        except:
+            await q.delete()
+            return await query.message.reply('Invalid number\nIf you want 7 days then send 7 only')
+        transaction_note = f'{d} days premium plan for {query.from_user.id}'
+        amount = d * PRE_DAY_AMOUNT
+        upi_uri = f"upi://pay?pa={UPI_ID}&pn={UPI_NAME}&am={amount}&cu=INR&tn={transaction_note}"
+        qr = qrcode.make(upi_uri)
+        p = f"upi_qr_{query.from_user.id}.png"
+        qr.save(p)
+        await q.delete()
+        await query.message.reply_photo(p, caption=f"{d} days premium plan amount is {amount} INR\nScan this QR in your UPI support platform and pay that amount (This is dynamic QR)\n\nSend your receipt as photo in here (timeout in 10 mins)\n\nSupport: {RECEIPT_SEND_USERNAME}")
+        os.remove(p)
+        try:
+            msg = await client.listen(chat_id=query.message.chat.id, user_id=query.from_user.id, timeout=600)
+        except ListenerTimeout:
+            await q.delete()
+            return await query.message.reply(f'Your time is over, send your receipt to: {RECEIPT_SEND_USERNAME}')
+        if msg.photo:
+            await q.delete()
+            await query.message.reply(f'Your receipt was sent, wait some time\nSupport: {RECEIPT_SEND_USERNAME}')
+            await client.send_photo(RECEIPT_SEND_USERNAME, msg.photo.file_id, transaction_note)
+        else:
+            await q.delete()
+            await query.message.reply(f"Not valid photo, send your receipt to: {RECEIPT_SEND_USERNAME}")
+
+
+
+    elif query.data == "start":
+        buttons = [[
+            InlineKeyboardButton("+ ᴀᴅᴅ ᴍᴇ ᴛᴏ ʏᴏᴜʀ ɢʀᴏᴜᴘ +", url=f'http://t.me/{temp.U_NAME}?startgroup=start')
+        ],[
+            InlineKeyboardButton('ℹ️ ᴜᴘᴅᴀᴛᴇs', url=UPDATES_LINK),
+            InlineKeyboardButton('🧑‍💻 ꜱᴜᴘᴘᴏʀᴛ', url=SUPPORT_LINK)
+        ],[
+            InlineKeyboardButton('👨‍🚒 ʜᴇʟᴘ', callback_data='help'),
+            InlineKeyboardButton('🔎 ɪɴʟɪɴᴇ', switch_inline_query_current_chat=''),
+            InlineKeyboardButton('📚 ᴀʙᴏᴜᴛ', callback_data='about')
+        ],[
+            InlineKeyboardButton('🤑 Buy Premium', url=f"https://t.me/{temp.U_NAME}?start=premium")
+        ]]
+        reply_markup = InlineKeyboardMarkup(buttons)
+        await query.edit_message_media(
+            InputMediaPhoto(random.choice(PICS), caption=script.START_TXT.format(query.from_user.mention, get_wish())),
+            reply_markup=reply_markup
+        )
+        
+    elif query.data == "about":
+        buttons = [[
+            InlineKeyboardButton('📊 sᴛᴀᴛᴜs 📊', callback_data='stats'),
+            InlineKeyboardButton('🤖 sᴏᴜʀᴄᴇ ᴄᴏᴅᴇ 🤖', callback_data='source')
+        ],[
+            InlineKeyboardButton('🧑‍💻 ʙᴏᴛ ᴏᴡɴᴇʀ 🧑‍💻', callback_data='owner')
+        ],[
+            InlineKeyboardButton('« ʙᴀᴄᴋ', callback_data='start')
+        ]]
+        reply_markup = InlineKeyboardMarkup(buttons)
+        await query.edit_message_media(
+            InputMediaPhoto(random.choice(PICS), caption=script.MY_ABOUT_TXT),
+            reply_markup=reply_markup
+        )
+
+    elif query.data == "stats":
+        if query.from_user.id not in ADMINS:
+            return await query.answer("ADMINS Only!", show_alert=True)
+        files = db_count_documents()
+        users = await db.total_users_count()
+        chats = await db.total_chat_count()
+        prm = db.get_premium_count()
+        used_files_db_size = get_size(await db.get_files_db_size())
+        used_data_db_size = get_size(await db.get_data_db_size())
+
+        if SECOND_FILES_DATABASE_URL:
+            secnd_files_db_used_size = get_size(await db.get_second_files_db_size())
+            secnd_files = second_db_count_documents()
+        else:
+            secnd_files_db_used_size = '-'
+            secnd_files = '-'
+        uptime = get_readable_time(time_now() - temp.START_TIME)
+        buttons = [[
+            InlineKeyboardButton('« ʙᴀᴄᴋ', callback_data='about')
+        ]]
+        await query.edit_message_media(
+            InputMediaPhoto(random.choice(PICS), caption=script.STATUS_TXT.format(users, prm, chats, used_data_db_size, files, used_files_db_size, secnd_files, secnd_files_db_used_size, uptime)),
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+    
+    elif query.data == "owner":
+        buttons = [[InlineKeyboardButton('« ʙᴀᴄᴋ', callback_data='about')]]
+        reply_markup = InlineKeyboardMarkup(buttons)
+        await query.edit_message_media(
+            InputMediaPhoto(random.choice(PICS), caption=script.MY_OWNER_TXT),
+            reply_markup=reply_markup
+        )
+        
+    elif query.data == "help":
+        buttons = [[
+            InlineKeyboardButton('User Command', callback_data='user_command'),
+            InlineKeyboardButton('Admin Command', callback_data='admin_command')
+        ],[
+            InlineKeyboardButton('« ʙᴀᴄᴋ', callback_data='start')
+        ]]
+        reply_markup = InlineKeyboardMarkup(buttons)
+        await query.edit_message_media(
+            InputMediaPhoto(random.choice(PICS), caption=script.HELP_TXT.format(query.from_user.mention)),
+            reply_markup=reply_markup
+        )
+
+    elif query.data == "user_command":
+        buttons = [[
+            InlineKeyboardButton('« ʙᴀᴄᴋ', callback_data='help')
+        ]]
+        reply_markup = InlineKeyboardMarkup(buttons)
+        await query.edit_message_media(
+            InputMediaPhoto(random.choice(PICS), caption=script.USER_COMMAND_TXT),
+            reply_markup=reply_markup
+        )
+        
+    elif query.data == "admin_command":
+        if query.from_user.id not in ADMINS:
+            return await query.answer("ADMINS Only!", show_alert=True)
+        buttons = [[
+            InlineKeyboardButton('« ʙᴀᴄᴋ', callback_data='help')
+        ]]
+        reply_markup = InlineKeyboardMarkup(buttons)
+        await query.edit_message_media(
+            InputMediaPhoto(random.choice(PICS), caption=script.ADMIN_COMMAND_TXT),
+            reply_markup=reply_markup
+        )
+
+    elif query.data == "source":
+        buttons = [[
+            InlineKeyboardButton('≼ ʙᴀᴄᴋ', callback_data='about')
+        ]]
+        reply_markup = InlineKeyboardMarkup(buttons)
+        await query.edit_message_media(
+            InputMediaPhoto(random.choice(PICS), caption=script.SOURCE_TXT),
+            reply_markup=reply_markup
+        )
+  
+    elif query.data.startswith("bool_setgs"):
+        ident, set_type, status, grp_id = query.data.split("#")
+        userid = query.from_user.id if query.from_user else None
+        if not await is_check_admin(client, int(grp_id), userid):
+            await query.answer("You not admin in this group.", show_alert=True)
+            return
+
+        if status == "True":
+            await save_group_settings(int(grp_id), set_type, False)
+        else:
+            await save_group_settings(int(grp_id), set_type, True)
+
+        btn = await get_grp_stg(int(grp_id))
+        await query.message.edit_reply_markup(InlineKeyboardMarkup(btn))
+            
+    elif query.data.startswith("imdb_setgs"):
+        _, grp_id = query.data.split("#")
+        userid = query.from_user.id if query.from_user else None
+        if not await is_check_admin(client, int(grp_id), userid):
+            return await query.answer("You not admin in this group.", show_alert=True)
+        settings = await get_settings(int(grp_id))
+        btn = [[
+            InlineKeyboardButton('Set IMDb template', callback_data=f'set_imdb#{grp_id}')
+        ],[
+            InlineKeyboardButton('Default IMDb template', callback_data=f'default_imdb#{grp_id}')
+        ],[
+            InlineKeyboardButton('Back', callback_data=f'back_setgs#{grp_id}')
+        ]]
+        await query.message.edit(f'Select you want option\n\nCurrent template:\n{settings["template"]}', reply_markup=InlineKeyboardMarkup(btn))
+
+    elif query.data.startswith("set_imdb"):
+        _, grp_id = query.data.split("#")
+        userid = query.from_user.id if query.from_user else None
+        if not await is_check_admin(client, int(grp_id), userid):
+            return await query.answer("You not admin in this group.", show_alert=True)
+        m = await query.message.edit('Send imdb template with formats')
+        msg = await client.listen(chat_id=query.message.chat.id, user_id=query.from_user.id)
+        await save_group_settings(int(grp_id), 'template', msg.text)
+        await m.delete()
+        btn = [[
+            InlineKeyboardButton('Back', callback_data=f'imdb_setgs#{grp_id}')
+        ]]
+        await query.message.reply('Successfully changed template', reply_markup=InlineKeyboardMarkup(btn))
+
+    elif query.data.startswith("default_imdb"):
+        _, grp_id = query.data.split("#")
+        userid = query.from_user.id if query.from_user else None
+        if not await is_check_admin(client, int(grp_id), userid):
+            return await query.answer("You not admin in this group.", show_alert=True)
+        await save_group_settings(int(grp_id), 'template', script.IMDB_TEMPLATE)
+        btn = [[
+            InlineKeyboardButton('Back', callback_data=f'imdb_setgs#{grp_id}')
+        ]]
+        await query.message.edit('Successfully changed template to default', reply_markup=InlineKeyboardMarkup(btn))
+
+    elif query.data.startswith("welcome_setgs"):
+        _, grp_id = query.data.split("#")
+        userid = query.from_user.id if query.from_user else None
+        if not await is_check_admin(client, int(grp_id), userid):
+            return await query.answer("You not admin in this group.", show_alert=True)
+        settings = await get_settings(int(grp_id))
+        btn = [[
+            InlineKeyboardButton('Set Welcome', callback_data=f'set_welcome#{grp_id}')
+        ],[
+            InlineKeyboardButton('Default Welcome', callback_data=f'default_welcome#{grp_id}')
+        ],[
+            InlineKeyboardButton('Back', callback_data=f'back_setgs#{grp_id}')
+        ]]
+        await query.message.edit(f'Select you want option\n\nCurrent welcome:\n{settings["welcome_text"]}', reply_markup=InlineKeyboardMarkup(btn))
+
+    elif query.data.startswith("set_welcome"):
+        _, grp_id = query.data.split("#")
+        userid = query.from_user.id if query.from_user else None
+        if not await is_check_admin(client, int(grp_id), userid):
+            return await query.answer("You not admin in this group.", show_alert=True)
+        m = await query.message.edit('Send Welcome with formats')
+        msg = await client.listen(chat_id=query.message.chat.id, user_id=query.from_user.id)
+        await save_group_settings(int(grp_id), 'welcome_text', msg.text)
+        await m.delete()
+        btn = [[
+            InlineKeyboardButton('Back', callback_data=f'welcome_setgs#{grp_id}')
+        ]]
+        await query.message.reply('Successfully changed Welcome', reply_markup=InlineKeyboardMarkup(btn))
+
+    elif query.data.startswith("default_welcome"):
+        _, grp_id = query.data.split("#")
+        userid = query.from_user.id if query.from_user else None
+        if not await is_check_admin(client, int(grp_id), userid):
+            return await query.answer("You not admin in this group.", show_alert=True)
+        await save_group_settings(int(grp_id), 'welcome_text', script.WELCOME_TEXT)
+        btn = [[
+            InlineKeyboardButton('Back', callback_data=f'welcome_setgs#{grp_id}')
+        ]]
+        await query.message.edit('Successfully changed Welcome to default', reply_markup=InlineKeyboardMarkup(btn))
+
+    
+    elif query.data.startswith("tutorial_setgs"):
+        _, grp_id = query.data.split("#")
+        userid = query.from_user.id if query.from_user else None
+        if not await is_check_admin(client, int(grp_id), userid):
+            return await query.answer("You not admin in this group.", show_alert=True)
+        settings = await get_settings(int(grp_id))
+        btn = [[
+            InlineKeyboardButton('Set tutorial link', callback_data=f'set_tutorial#{grp_id}')
+        ],[
+            InlineKeyboardButton('Default tutorial link', callback_data=f'default_tutorial#{grp_id}')
+        ],[
+            InlineKeyboardButton('Back', callback_data=f'back_setgs#{grp_id}')
+        ]]
+        await query.message.edit(f'Select you want option\n\nCurrent tutorial link:\n{settings["tutorial"]}', reply_markup=InlineKeyboardMarkup(btn), disable_web_page_preview=True)
+        
+    elif query.data.startswith("set_tutorial"):
+        _, grp_id = query.data.split("#")
+        userid = query.from_user.id if query.from_user else None
+        if not await is_check_admin(client, int(grp_id), userid):
+            return await query.answer("You not admin in this group.", show_alert=True)
+        m = await query.message.edit('Send tutorial link')
+        msg = await client.listen(chat_id=query.message.chat.id, user_id=query.from_user.id)
+        await save_group_settings(int(grp_id), 'tutorial', msg.text)
+        await m.delete()
+        btn = [[
+            InlineKeyboardButton('Back', callback_data=f'tutorial_setgs#{grp_id}')
+        ]]
+        await query.message.reply('Successfully changed tutorial link', reply_markup=InlineKeyboardMarkup(btn))
+
+    elif query.data.startswith("default_tutorial"):
+        _, grp_id = query.data.split("#")
+        userid = query.from_user.id if query.from_user else None
+        if not await is_check_admin(client, int(grp_id), userid):
+            return await query.answer("You not admin in this group.", show_alert=True)
+        await save_group_settings(int(grp_id), 'tutorial', TUTORIAL)
+        btn = [[
+            InlineKeyboardButton('Back', callback_data=f'tutorial_setgs#{grp_id}')
+        ]]
+        await query.message.edit('Successfully changed tutorial link to default', reply_markup=InlineKeyboardMarkup(btn))
+
+    
+    elif query.data.startswith("shortlink_setgs"):
+        _, grp_id = query.data.split("#")
+        userid = query.from_user.id if query.from_user else None
+        if not await is_check_admin(client, int(grp_id), userid):
+            return await query.answer("You not admin in this group.", show_alert=True)
+        settings = await get_settings(int(grp_id))
+        btn = [[
+            InlineKeyboardButton('Set shortlink', callback_data=f'set_shortlink#{grp_id}')
+        ],[
+            InlineKeyboardButton('Default shortlink', callback_data=f'default_shortlink#{grp_id}')
+        ],[
+            InlineKeyboardButton('Back', callback_data=f'back_setgs#{grp_id}')
+        ]]
+        await query.message.edit(f'Select you want option\n\nCurrent shortlink:\n{settings["url"]} - {settings["api"]}', reply_markup=InlineKeyboardMarkup(btn))
+        
+    elif query.data.startswith("set_shortlink"):
+        _, grp_id = query.data.split("#")
+        userid = query.from_user.id if query.from_user else None
+        if not await is_check_admin(client, int(grp_id), userid):
+            return await query.answer("You not admin in this group.", show_alert=True)
+        m = await query.message.edit('Send shortlink url')
+        url_msg = await client.listen(chat_id=query.message.chat.id, user_id=query.from_user.id)
+        await m.delete()
+        k = await query.message.reply('Send shortlink api key')
+        key_msg = await client.listen(chat_id=query.message.chat.id, user_id=query.from_user.id)
+        await save_group_settings(int(grp_id), 'url', url_msg.text)
+        await save_group_settings(int(grp_id), 'api', key_msg.text)
+        await k.delete()
+        btn = [[
+            InlineKeyboardButton('Back', callback_data=f'shortlink_setgs#{grp_id}')
+        ]]
+        await query.message.reply('Successfully changed shortlink', reply_markup=InlineKeyboardMarkup(btn))
+
+    elif query.data.startswith("default_shortlink"):
+        _, grp_id = query.data.split("#")
+        userid = query.from_user.id if query.from_user else None
+        if not await is_check_admin(client, int(grp_id), userid):
+            return await query.answer("You not admin in this group.", show_alert=True)
+        await save_group_settings(int(grp_id), 'url', SHORTLINK_URL)
+        await save_group_settings(int(grp_id), 'api', SHORTLINK_API)
+        btn = [[
+            InlineKeyboardButton('Back', callback_data=f'shortlink_setgs#{grp_id}')
+        ]]
+        await query.message.edit('Successfully changed shortlink to default', reply_markup=InlineKeyboardMarkup(btn))
+
+    elif query.data.startswith("caption_setgs"):
+        _, grp_id = query.data.split("#")
+        userid = query.from_user.id if query.from_user else None
+        if not await is_check_admin(client, int(grp_id), userid):
+            return await query.answer("You not admin in this group.", show_alert=True)
+        settings = await get_settings(int(grp_id))
+        btn = [[
+            InlineKeyboardButton('Set caption', callback_data=f'set_caption#{grp_id}')
+        ],[
+            InlineKeyboardButton('Default caption', callback_data=f'default_caption#{grp_id}')
+        ],[
+            InlineKeyboardButton('Back', callback_data=f'back_setgs#{grp_id}')
+        ]]
+        await query.message.edit(f'Select you want option\n\nCurrent caption:\n{settings["caption"]}', reply_markup=InlineKeyboardMarkup(btn))
+        
+        
+    elif query.data.startswith("set_caption"):
+        _, grp_id = query.data.split("#")
+        userid = query.from_user.id if query.from_user else None
+        if not await is_check_admin(client, int(grp_id), userid):
+            return await query.answer("You not admin in this group.", show_alert=True)
+        m = await query.message.edit('Send caption with formats')
+        msg = await client.listen(chat_id=query.message.chat.id, user_id=query.from_user.id)
+        await save_group_settings(int(grp_id), 'caption', msg.text)
+        await m.delete()
+        btn = [[
+            InlineKeyboardButton('Back', callback_data=f'caption_setgs#{grp_id}')
+        ]]
+        await query.message.reply('Successfully changed caption', reply_markup=InlineKeyboardMarkup(btn))
+
+
+    elif query.data.startswith("default_caption"):
+        _, grp_id = query.data.split("#")
+        userid = query.from_user.id if query.from_user else None
+        if not await is_check_admin(client, int(grp_id), userid):
+            return await query.answer("You not admin in this group.", show_alert=True)
+        await save_group_settings(int(grp_id), 'caption', script.FILE_CAPTION)
+        btn = [[
+            InlineKeyboardButton('Back', callback_data=f'caption_setgs#{grp_id}')
+        ]]
+        await query.message.edit('Successfully changed caption to default', reply_markup=InlineKeyboardMarkup(btn))
+
+    elif query.data.startswith("back_setgs"):
+        _, grp_id = query.data.split("#")
+        userid = query.from_user.id if query.from_user else None
+        if not await is_check_admin(client, int(grp_id), userid):
+            return await query.answer("You not admin in this group.", show_alert=True)
+        btn = await get_grp_stg(int(grp_id))
+        chat = await client.get_chat(int(grp_id))
+        await query.message.edit(text=f"Change your settings for <b>'{chat.title}'</b> as your wish. ⚙", reply_markup=InlineKeyboardMarkup(btn))
+
+    elif query.data == "open_group_settings":
+        userid = query.from_user.id if query.from_user else None
+        if not await is_check_admin(client, query.message.chat.id, userid):
+            return await query.answer("You not admin in this group.", show_alert=True)
+        btn = await get_grp_stg(query.message.chat.id)
+        await query.message.edit(text=f"Change your settings for <b>'{query.message.chat.title}'</b> as your wish. ⚙", reply_markup=InlineKeyboardMarkup(btn))
+
+    elif query.data == "open_pm_settings":
+        userid = query.from_user.id if query.from_user else None
+        if not await is_check_admin(client, query.message.chat.id, userid):
+            return await query.answer("You not admin in this group.", show_alert=True)
+        btn = await get_grp_stg(query.message.chat.id)
+        try:
+            await client.send_message(query.from_user.id, f"Change your settings for <b>'{query.message.chat.title}'</b> as your wish. ⚙", reply_markup=InlineKeyboardMarkup(btn))
+        except:
+            await query.answer(url=f"https://t.me/{temp.U_NAME}?start=settings_{query.message.chat.id}")
+        btn = [[
+            InlineKeyboardButton('Go To PM', url=f"https://t.me/{temp.U_NAME}")
+        ]]
+        await query.message.edit("Settings menu has been sent to PM", reply_markup=InlineKeyboardMarkup(btn))
+
+    elif query.data.startswith("delete"):
+        _, query_ = query.data.split("_", 1)
+        await query.message.edit('Deleting...')
+        deleted = await delete_files(query_)
+        await query.message.edit(f'Deleted {deleted} files in your database in your query {query_}')
+     
+    elif query.data.startswith("send_all"):
+        ident, key, req = query.data.split("#")
+        if int(req) != query.from_user.id:
+            return await query.answer(f"Hello {query.from_user.first_name},\nDon't Click Other Results!", show_alert=True)        
+        files = temp.FILES.get(key)
+        if not files:
+            await query.answer(f"Hello {query.from_user.first_name},\nSend New Request Again!", show_alert=True)
+            return        
+        await query.answer(url=f"https://t.me/{temp.U_NAME}?start=all_{query.message.chat.id}_{key}")
+
+    elif query.data == "unmute_all_members":
+        if not await is_check_admin(client, query.message.chat.id, query.from_user.id):
+            await query.answer("This Is Not For You!", show_alert=True)
+            return
+        users_id = []
+        await query.message.edit("Unmute all started! This process maybe get some time...")
+        try:
+            async for member in client.get_chat_members(query.message.chat.id, filter=enums.ChatMembersFilter.RESTRICTED):
+                users_id.append(member.user.id)
+            for user_id in users_id:
+                await client.unban_chat_member(query.message.chat.id, user_id)
+        except Exception as e:
+            await query.message.delete()
+            await query.message.reply(f'Something went wrong.\n\n<code>{e}</code>')
+            return
+        await query.message.delete()
+        if users_id:
+            await query.message.reply(f"Successfully unmuted <code>{len(users_id)}</code> users.")
+        else:
+            await query.message.reply('Nothing to unmute users.')
+
+    elif query.data == "unban_all_members":
+        if not await is_check_admin(client, query.message.chat.id, query.from_user.id):
+            await query.answer("This Is Not For You!", show_alert=True)
+            return
+        users_id = []
+        await query.message.edit("Unban all started! This process maybe get some time...")
+        try:
+            async for member in client.get_chat_members(query.message.chat.id, filter=enums.ChatMembersFilter.BANNED):
+                users_id.append(member.user.id)
+            for user_id in users_id:
+                await client.unban_chat_member(query.message.chat.id, user_id)
+        except Exception as e:
+            await query.message.delete()
+            await query.message.reply(f'Something went wrong.\n\n<code>{e}</code>')
+            return
+        await query.message.delete()
+        if users_id:
+            await query.message.reply(f"Successfully unban <code>{len(users_id)}</code> users.")
+        else:
+            await query.message.reply('Nothing to unban users.')
+
+    elif query.data == "kick_muted_members":
+        if not await is_check_admin(client, query.message.chat.id, query.from_user.id):
+            await query.answer("This Is Not For You!", show_alert=True)
+            return
+        users_id = []
+        await query.message.edit("Kick muted users started! This process maybe get some time...")
+        try:
+            async for member in client.get_chat_members(query.message.chat.id, filter=enums.ChatMembersFilter.RESTRICTED):
+                users_id.append(member.user.id)
+            for user_id in users_id:
+                await client.ban_chat_member(query.message.chat.id, user_id, datetime.now() + timedelta(seconds=30))
+        except Exception as e:
+            await query.message.delete()
+            await query.message.reply(f'Something went wrong.\n\n<code>{e}</code>')
+            return
+        await query.message.delete()
+        if users_id:
+            await query.message.reply(f"Successfully kicked muted <code>{len(users_id)}</code> users.")
+        else:
+            await query.message.reply('Nothing to kick muted users.')
+
+    elif query.data == "kick_deleted_accounts_members":
+        if not await is_check_admin(client, query.message.chat.id, query.from_user.id):
+            await query.answer("This Is Not For You!", show_alert=True)
+            return
+        users_id = []
+        await query.message.edit("Kick deleted accounts started! This process maybe get some time...")
+        try:
+            async for member in client.get_chat_members(query.message.chat.id):
+                if member.user.is_deleted:
+                    users_id.append(member.user.id)
+            for user_id in users_id:
+                await client.ban_chat_member(query.message.chat.id, user_id, datetime.now() + timedelta(seconds=30))
+        except Exception as e:
+            await query.message.delete()
+            await query.message.reply(f'Something went wrong.\n\n<code>{e}</code>')
+            return
+        await query.message.delete()
+        if users_id:
+            await query.message.reply(f"Successfully kicked deleted <code>{len(users_id)}</code> accounts.")
+        else:
+            await query.message.reply('Nothing to kick deleted accounts.')
+
+
+
+async def auto_filter(client, msg, s, spoll=False):
+    if not spoll:
+        message = msg
+        settings = await get_settings(message.chat.id)
+        search = re.sub(r"\s+", " ", re.sub(r"[-:\"';!]", " ", message.text)).strip()
+        files, offset, total_results = await get_search_results(search)
+        if not files:
+            if settings["spell_check"]:
+                await advantage_spell_chok(message, s)
+            else:
+                await s.edit(f'I cant find {search}')
+            return
+    else:
+        settings = await get_settings(msg.message.chat.id)
+        message = msg.message.reply_to_message  # msg will be callback query
+        search, files, offset, total_results = spoll
+    req = message.from_user.id if message and message.from_user else 0
+    key = f"{message.chat.id}-{message.id}"
+    temp.FILES[key] = files
+    BUTTONS[key] = search
+    files_link = ""
+    if settings['links']:
+        btn = []
+        for file_num, file in enumerate(files, start=1):
+            files_link += f"""<b>\n\n{file_num}. <a href=https://t.me/{temp.U_NAME}?start=file_{message.chat.id}_{file['_id']}>[{get_size(file['file_size'])}] {file['file_name']}</a></b>"""
+    else:
+        btn = [[
+            InlineKeyboardButton(text=f"{get_size(file['file_size'])} - {file['file_name']}", callback_data=f'file#{file["_id"]}')
+        ]
+            for file in files
+        ]   
+    if offset != "":
+        if settings['shortlink'] and not await is_premium(message.from_user.id, client):
+            btn.insert(0,
+                [InlineKeyboardButton("📰 ʟᴀɴɢᴜᴀɢᴇs", callback_data=f"languages#{key}#{req}#{offset}"),
+                InlineKeyboardButton("🔍 ǫᴜᴀʟɪᴛʏ", callback_data=f"quality#{key}#{req}#{offset}")]
+            )
+            btn.insert(1,
+                [InlineKeyboardButton("♻️ sᴇɴᴅ ᴀʟʟ ♻️", url=await get_shortlink(settings['url'], settings['api'], f'https://t.me/{temp.U_NAME}?start=all_{message.chat.id}_{key}'))]
+            )
+        else:
+            btn.insert(0,
+                [InlineKeyboardButton("📰 ʟᴀɴɢᴜᴀɢᴇs", callback_data=f"languages#{key}#{req}#{offset}"),
+                InlineKeyboardButton("🔍 ǫᴜᴀʟɪᴛʏ", callback_data=f"quality#{key}#{req}#{offset}")]
+            )
+            btn.insert(1,
+                [InlineKeyboardButton("♻️ sᴇɴᴅ ᴀʟʟ", callback_data=f"send_all#{key}#{req}")]
+            )
+        btn.append(
+            [InlineKeyboardButton(text=f"1/{math.ceil(int(total_results) / MAX_BTN)}", callback_data="buttons"),
+             InlineKeyboardButton(text="ɴᴇxᴛ »", callback_data=f"next_{req}_{key}_{offset}")]
+        )
+    else:
+        if settings['shortlink'] and not await is_premium(message.from_user.id, client):
+            btn.insert(0,
+                [InlineKeyboardButton("♻️ sᴇɴᴅ ᴀʟʟ ♻️", url=await get_shortlink(settings['url'], settings['api'], f'https://t.me/{temp.U_NAME}?start=all_{message.chat.id}_{key}'))]
+            )
+        else:
+            btn.insert(0,
+                [InlineKeyboardButton("♻️ sᴇɴᴅ ᴀʟʟ ♻️", callback_data=f"send_all#{key}#{req}")]
+            )
+    btn.append(
+        [InlineKeyboardButton('🤑 Buy Premium', url=f"https://t.me/{temp.U_NAME}?start=premium")]
+    )
+    imdb = await get_poster(search, file=(files[0])['file_name']) if settings["imdb"] else None
+    TEMPLATE = settings['template']
+    if imdb:
+        cap = TEMPLATE.format(
+            query=search,
+            title=imdb['title'],
+            votes=imdb['votes'],
+            aka=imdb["aka"],
+            seasons=imdb["seasons"],
+            box_office=imdb['box_office'],
+            localized_title=imdb['localized_title'],
+            kind=imdb['kind'],
+            imdb_id=imdb["imdb_id"],
+            cast=imdb["cast"],
+            runtime=imdb["runtime"],
+            countries=imdb["countries"],
+            certificates=imdb["certificates"],
+            languages=imdb["languages"],
+            director=imdb["director"],
+            writer=imdb["writer"],
+            producer=imdb["producer"],
+            composer=imdb["composer"],
+            cinematographer=imdb["cinematographer"],
+            music_team=imdb["music_team"],
+            distributors=imdb["distributors"],
+            release_date=imdb['release_date'],
+            year=imdb['year'],
+            genres=imdb['genres'],
+            poster=imdb['poster'],
+            plot=imdb['plot'],
+            rating=imdb['rating'],
+            url=imdb['url'],
+            **locals()
+        )
+    else:
+        cap = f"<b>💭 ʜᴇʏ {message.from_user.mention},\n♻️ ʜᴇʀᴇ ɪ ꜰᴏᴜɴᴅ ꜰᴏʀ ʏᴏᴜʀ sᴇᴀʀᴄʜ {search}...</b>"
+    CAP[key] = cap
+    del_msg = f"\n\n<b>⚠️ ᴛʜɪs ᴍᴇssᴀɢᴇ ᴡɪʟʟ ʙᴇ ᴀᴜᴛᴏ ᴅᴇʟᴇᴛᴇ ᴀꜰᴛᴇʀ <code>{get_readable_time(DELETE_TIME)}</code> ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛ ɪssᴜᴇs</b>" if settings["auto_delete"] else ''
+    if imdb and imdb.get('poster'):
+        await s.delete()
+        try:
+            k = await message.reply_photo(photo=imdb.get('poster'), caption=cap[:1024] + files_link + del_msg, reply_markup=InlineKeyboardMarkup(btn), parse_mode=enums.ParseMode.HTML, quote=True)
+            if settings["auto_delete"]:
+                await asyncio.sleep(DELETE_TIME)
+                await k.delete()
+                try:
+                    await message.delete()
+                except:
+                    pass
+        except (MediaEmpty, PhotoInvalidDimensions, WebpageMediaEmpty):
+            pic = imdb.get('poster')
+            poster = pic.replace('.jpg', "._V1_UX360.jpg")
+            k = await message.reply_photo(photo=poster, caption=cap[:1024] + files_link + del_msg, reply_markup=InlineKeyboardMarkup(btn), parse_mode=enums.ParseMode.HTML, quote=True)
+            if settings["auto_delete"]:
+                await asyncio.sleep(DELETE_TIME)
+                await k.delete()
+                try:
+                    await message.delete()
+                except:
+                    pass
+        except Exception as e:
+            k = await message.reply_text(cap + files_link + del_msg, reply_markup=InlineKeyboardMarkup(btn), disable_web_page_preview=True, parse_mode=enums.ParseMode.HTML, quote=True)
+            if settings["auto_delete"]:
+                await asyncio.sleep(DELETE_TIME)
+                await k.delete()
+                try:
+                    await message.delete()
+                except:
+                    pass
+    else:
+        k = await s.edit_text(cap + files_link + del_msg, reply_markup=InlineKeyboardMarkup(btn), disable_web_page_preview=True, parse_mode=enums.ParseMode.HTML)
+        if settings["auto_delete"]:
+            await asyncio.sleep(DELETE_TIME)
+            await k.delete()
+            try:
+                await message.delete()
+            except:
+                pass
+
+async def advantage_spell_chok(message, s):
+    search = message.text
+    google_search = search.replace(" ", "+")
+    btn = [[
+        InlineKeyboardButton("⚠️ Instructions ⚠️", callback_data='instructions'),
+        InlineKeyboardButton("🔎 Search Google 🔍", url=f"https://www.google.com/search?q={google_search}")
+    ]]
+    try:
+        movies = await get_poster(search, bulk=True)
+    except:
+        n = await s.edit_text(text=script.NOT_FILE_TXT.format(message.from_user.mention, search), reply_markup=InlineKeyboardMarkup(btn))
+        await asyncio.sleep(60)
+        await n.delete()
+        try:
+            await message.delete()
+        except:
+            pass
+        return
+    if not movies:
+        n = await s.edit_text(text=script.NOT_FILE_TXT.format(message.from_user.mention, search), reply_markup=InlineKeyboardMarkup(btn))
+        await temp.BOT.send_message(LOG_CHANNEL, f"#No_Result\n\nRequester: {message.from_user.mention}\nContent: {search}")
+        await asyncio.sleep(60)
+        await n.delete()
+        try:
+            await message.delete()
+        except:
+            pass
+        return
+    movies = list(dict.fromkeys(movies))
+    user = message.from_user.id if message.from_user else 0
+    buttons = [[
+        InlineKeyboardButton(text=movie.get('title'), callback_data=f"spolling#{movie.movieID}#{user}")
+    ]
+        for movie in movies
+    ]
+    buttons.append(
+        [InlineKeyboardButton("🚫 ᴄʟᴏsᴇ 🚫", callback_data="close_data")]
+    )
+    s = await s.edit_text(text=f"👋 Hello {message.from_user.mention},\n\nI couldn't find the <b>'{search}'</b> you requested.\nSelect if you meant one of these? 👇", reply_markup=InlineKeyboardMarkup(buttons))
+    await asyncio.sleep(300)
+    await s.delete()
+    try:
+        await message.delete()
+    except:
+        pass
+@Client.on_message(filters.command("delreq") & filters.private & filters.user(ADMINS))
+async def del_requests(client, message):
+    db.del_join_req()
+    await message.reply('Deleted join requests')
